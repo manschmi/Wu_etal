@@ -1,0 +1,376 @@
+---
+title: "Meola et al RNAseq data hg38"
+author: "Manfred Schmid"
+output: pdf_document
+editor_options: 
+  chunk_output_type: console
+---
+`r format(Sys.time(), "%d %B, %Y")`
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(fig.width=12, fig.height=8, fig.path='../../Figures/RNAseq_normalization/', dev='pdf', 
+                      echo=TRUE, warning=FALSE, message=FALSE, error=TRUE)
+```
+
+```{r load packages, echo=T, warning=F, message=F}
+suppressWarnings(library("tidyverse"))
+suppressWarnings(library("knitr"))
+suppressWarnings(library("magrittr"))
+suppressWarnings(library("DESeq2"))
+suppressWarnings(library("limma"))
+suppressWarnings(library("LSD"))
+```
+
+
+# remap raw reads and create tracks
+
+## download trimming mapping
+
+trimming:
+```{bash, eval=FALSE}
+#!/bin/sh
+#call: sbatch trim.sh
+source /com/extra/Trimmomatic/0.32/load.sh
+
+for fastq1 in /home/schmidm/faststorage/Meola/fastq/*_1.fq.gz
+do
+  echo $fastq
+  fastq2=${fastq1/_1.fq.gz/_2.fq.gz}
+  fastq_out1=${fastq1/_1.fq.gz/_1P.fq.gz}
+  fastq_out2=${fastq1/_1.fq.gz/_1U.fq.gz}
+  fastq_out3=${fastq1/_1.fq.gz/_2P.fq.gz}
+  fastq_out4=${fastq1/_1.fq.gz/_2U.fq.gz}
+
+  java -jar /com/extra/Trimmomatic/0.32/trimmomatic-0.32.jar PE ${fastq1} ${fastq2} ${fastq_out1} ${fastq_out2} ${fastq_out3} ${fastq_out4} ILLUMINACLIP:/com/extra/Trimmomatic/0.32/adapters/TruSeq3-PE-2.fa:2:30:10 HEADCROP:12 LEADING:22 SLIDINGWINDOW:4:22 MINLEN:25
+
+done
+```
+
+
+put on informative names
+```{bash, eval=FALSE}
+#!/bin/#!/bin/sh
+
+cd /home/schmidm/faststorage/Meola/scripts/hg38
+mv /home/schmidm/faststorage/Meola/fastq/*U.fq.gz /home/schmidm/faststorage/Meola/fastq/trimmed_unpaired/
+mv /home/schmidm/faststorage/Meola/fastq/*P.fq.gz /home/schmidm/faststorage/Meola/fastq/trimmed_paired/
+mv /home/schmidm/faststorage/Meola/fastq/*1.fq.gz /home/schmidm/faststorage/Meola/fastq/raw/
+mv /home/schmidm/faststorage/Meola/fastq/*2.fq.gz /home/schmidm/faststorage/Meola/fastq/raw/
+
+awk '{
+  sub(".*\\/","",$1)
+  sub("\.fq\.gz","P\.fq\.gz",$1)
+  sub(".*\\/","",$2)
+  sub("\.fastq","\.fq\.gz",$2)
+  print $1"\t"$2"\t"$4
+}' /home/schmidm/faststorage/Meola/NicolaMeola_RNA-Seq20Names.txt | \
+sed 1d | \
+while read line
+do
+  ar=(${line})
+  ls /home/schmidm/faststorage/Meola/fastq/trimmed_paired/${ar[0]};
+  ln -s /home/schmidm/faststorage/Meola/fastq/trimmed_paired/${ar[0]} /home/schmidm/faststorage/Meola/fastq/trimmed_paired/${ar[2]}"_"${ar[1]}
+done
+
+```
+
+
+map using map_hg38_v2.sh
+```{bash, eval=FALSE}
+#!/bin/sh
+##hisat2 to hg38 mapping!
+
+# cd /home/schmidm/faststorage/Meola/scripts/hg38
+
+# for kd in EGFP RRP40 ZCCHC8 ZFC3H1 ; do for i in 1 2 3; do sbatch --mem=16g -c 8 --time=720 map_hg38_v2.sh "${kd}_${i}"; done; done
+
+# for kd in EGFP RRP40 ZCCHC8 ZFC3H1 ; do for i in 1 2 3; do sbatch --mem=16g -c 8 --time=720 map_hg38_v2.sh "${kd}_BrU_${i}"; done; done
+
+set -x
+. /home/schmidm/miniconda2/etc/profile.d/conda.sh
+conda activate hisat2
+
+fastq_base="/home/schmidm/faststorage/Meola/fastq/trimmed_paired/"
+name=$1
+
+fastq1=$(ls ${fastq_base}*${name}*_R1.fq.gz | grep -e "L._${name}" | tr "\n" "," | sed s/,$//g)
+
+fastq2=${fastq1//_R1.fq.gz/_R2.fq.gz}
+
+index="/home/schmidm/annotations/hg38/HISAT2_index/hg38_tran/genome_tran"
+
+
+
+sam="/home/schmidm/faststorage/Meola/hg38_bam/${name}_hg38.sam"
+echo "for ${name}"
+echo " mapping mate1 $fastq1"
+echo " mapping mate2 $fastq2"
+echo " into $sam"
+hisat2 -p 8 -x $index -1 $fastq1 -2 $fastq2 -S $sam
+
+bam=${sam/.sam/_unique_properlypaired_hg38.bam}
+
+source /com/extra/samtools/1.6.0/load.sh
+
+echo "sorting and filtering $sam into $bam"
+samtools view -S -u -f 2 -F 780 ${sam} | samtools sort -m 14G -T "/scratch/${SLURM_JOBID}/tmp" -o ${bam} -
+
+echo " indexing"
+samtools index ${bam}
+
+echo "DONE"
+```
+
+## making of tracks for genome browser
+
+using genomecov_v2.sh
+```{bash, eval=FALSE}
+#!/bin/sh
+#cd /home/schmidm/faststorage/Meola/scripts/hg38
+#for f in ../../hg38_bam/*_unique_properlypaired_hg38.bam; do sbatch --mem=4g genomecov_v2.sh $f;done
+
+source /com/extra/bedtools/2.25.0/load.sh
+source /com/extra/samtools/1.6.0/load.sh
+source /com/extra/ucsc/2015-04-21/load.sh
+# Get the bam file from the command line
+bam=$1
+
+
+#samtools explanation
+#flag 64 (0x40) -> first in pair
+#flag 128 (0x128) -> second in pair
+#flag 16 (0x10) -> read reverse strand
+
+echo "for bam ${bam}"
+
+
+genome="/home/schmidm/annotations/hg38/hg38.chrom.sizes"
+sf=$(samtools idxstats ${bam} | awk '{sum+=$3}END{print 1000000/sum}')
+echo "using size factor: ${sf}"
+
+# Forward strand.
+echo "  bedgraph for plus strand RNA signal from paired-end bam file"
+# ie read mapping is second in pair and NOT reverse strand or first in pair and reverse strand or
+
+samtools view -h $bam | \
+awk '$1 ~ /^@/ || ((!and($2,16) && and($2,128)) || (and($2,16) && and($2,64)) )' | \
+samtools view -S -u - | \
+bedtools genomecov -bg -split -scale $sf -g $genome -ibam - > ${bam/.bam/_plus.bedgraph}
+
+
+# Reverse strand
+echo "  bedgraph for minus strand RNA signal from paired-end bam file"
+# ie read mapping is second in pair and reverse strand or first in pair and not reverse strand
+samtools view -h $bam | \
+awk '$1 ~ /^@/ || ((and($2,16) && and($2,128)) || (!and($2,16) && and($2,64)) )' | \
+samtools view -S -u - | \
+bedtools genomecov -bg -split -scale $sf -g $genome -ibam - > ${bam/.bam/_minus.bedgraph}
+
+
+echo "  converting to bigwig"
+bedGraphToBigWig ${bam/.bam/_plus.bedgraph} $genome ${bam/.bam/_plus.bw}
+bedGraphToBigWig ${bam/.bam/_minus.bedgraph} $genome ${bam/.bam/_minus.bw}
+
+echo "  DONE"
+
+```
+
+
+finally make replicate average tracks
+
+using replicate_avgs_tracks.sh
+```{r}
+#!/bin/sh
+#cd /home/schmidm/faststorage/Meola/scripts/hg38
+# sbatch --mem=64g replicate_avgs_tracks.sh
+
+source /com/extra/bedtools/2.25.0/load.sh
+source /com/extra/ucsc/2015-04-21/load.sh
+
+genome="/home/schmidm/annotations/hg38/hg38.chrom.sizes"
+
+for KD in EGFP RRP40 ZFC3H1 ZCCHC8 EGFP_BrU RRP40_BrU ZFC3H1_BrU ZCCHC8_BrU
+do
+  echo "$KD"
+  for strand in plus minus
+  do
+    echo "  $strand"
+    bgs="../../hg38_bam/${KD}_1_hg38_unique_properlypaired_hg38_${strand}.bedgraph ../../hg38_bam/${KD}_2_hg38_unique_properlypaired_hg38_${strand}.bedgraph ../../hg38_bam/${KD}_3_hg38_unique_properlypaired_hg38_${strand}.bedgraph"
+    avg_bg="../../hg38_bam/${KD}_avg_${strand}.bedgraph"
+
+    echo "   averaging"
+    bedtools unionbedg -i $bgs | \
+    awk '{print $1"\t"$2"\t"$3"\t"($4+$5+$6)/3}' | \
+    bedtools sort -i - > $avg_bg
+
+    awk '!($1 ~ /_/)' $avg_bg > ${avg_bg/.bedgraph/_majorchr.bedgraph}
+
+    echo "   converting to bigwig"
+    bedGraphToBigWig ${avg_bg/.bedgraph/_majorchr.bedgraph} $genome ${avg_bg/.bedgraph/_majorchr.bw}
+  done
+done
+
+echo "DONE"
+
+```
+
+
+
+# More precise normalization using DESeq2 for quantification
+
+## counting scripts
+
+```{bash, eval=FALSE}
+#!/bin/sh
+##cd /home/schmidm/faststorage/Meola/scripts/hg38
+##for f in /home/schmidm/faststorage/Meola/hg38_bam/*_unique_properlypaired_hg38_namesorted.bam; do sbatch -t 720 count_Refseq_hg38.sh $f; done
+
+set -x
+
+bam_file=$1
+
+echo "${bam_file}"
+
+echo "  counting exons "
+gtf="/home/schmidm/annotations/hg38/RefSeq_GRCh38/RefSeqNCBIAll_GRCh38.gtf"
+
+htseq-count -f bam -s reverse -t exon -m intersection-strict \
+${bam_file} $gtf > ${bam_file/.bam/.exon_strict_table_namesorted_RefSeq_GRCh38}
+```
+
+
+
+## load count data to R
+
+```{r}
+path_to_counts <- '/Volumes/GenomeDK/faststorage/Meola/hg38_bam/'
+
+exon_regex = '_unique_properlypaired_hg38_namesorted.exon_strict_table_namesorted_RefSeq_GRCh38'
+(exon_count_files <- dir(path_to_counts) %>% 
+    keep(grepl(exon_regex,.) & !grepl('PA', .) &
+           (grepl('^ZFC3H1', .) | grepl('^ZCCHC8', .) | grepl('^RRP40', .) | grepl('^EGFP', .))))
+```
+
+```{r}
+(exon_counts <- lapply(exon_count_files, function(fname) 
+  read_tsv(paste0(path_to_counts, fname), col_names=c('gene', 'count')) %>%
+    mutate(fname = sub('_unique.*', '', fname))) %>%
+  bind_rows %>%
+  tidyr::separate(fname, c('siRNA', 'fraction', 'rep'), sep='_', extra='drop') %>%
+  mutate(rep = ifelse(rep == 'hg38', fraction, rep),
+         fraction = ifelse(fraction != 'BrU', 'total', 'BrU')))
+```
+
+
+## DESeq2 sizeFactors for total data
+
+create all info for the DESeq2 run
+```{r}
+cnt_mat <- exon_counts %>%
+  filter(!grepl('^__', gene), fraction == 'total') %>% #removes lines __alignment_not_unique, __ambigous, ...
+  unite(file, c('siRNA', 'fraction', 'rep'), sep='_') %>%
+  spread(file, count) %>%
+  data.frame %>%
+  remove_rownames %>%
+  column_to_rownames('gene')
+
+head(cnt_mat)
+```
+
+many features are not detected in any sample:
+```{r}
+nrow(cnt_mat)
+```
+
+```{r}
+nrow(cnt_mat[rowSums(cnt_mat)>0,])
+```
+
+remove those:
+```{r}
+cnt_mat <- cnt_mat[rowSums(cnt_mat)>0,]
+```
+
+
+```{r}
+(coldata <- data.frame(condition = colnames(cnt_mat)) %>%
+  tidyr::separate(condition, c('siRNA', 'fraction', 'replicate'), by='_', remove=FALSE) %>%
+  remove_rownames %>%
+  column_to_rownames('condition'))
+```
+
+```{r}
+ddsFullCountTable <- DESeqDataSetFromMatrix(countData = cnt_mat,
+                                            colData = coldata,
+                                            design = ~ siRNA)
+
+dd_total <- estimateSizeFactors(ddsFullCountTable)
+
+(sfs_total <- data.frame(sizeFactor = sizeFactors(dd_total)) %>%
+  rownames_to_column(var='lib') %>%
+  tidyr::separate(lib, c('siRNA', 'fraction', 'rep')))
+```
+
+
+
+## DESeq2 sizeFactors for BrU data
+
+
+create all info for the DESeq2 run
+```{r}
+BrU_cnt_mat <- exon_counts %>%
+  filter(!grepl('^__', gene), fraction == 'BrU') %>% #removes lines __alignment_not_unique, __ambigous, ...
+  unite(file, c('siRNA', 'fraction', 'rep'), sep='_') %>%
+  spread(file, count) %>%
+  data.frame %>%
+  remove_rownames %>%
+  column_to_rownames('gene')
+
+head(BrU_cnt_mat)
+```
+
+many features are not detected in any sample:
+```{r}
+nrow(BrU_cnt_mat)
+```
+
+```{r}
+nrow(BrU_cnt_mat[rowSums(BrU_cnt_mat)>0,])
+```
+
+remove those:
+```{r}
+BrU_cnt_mat <- BrU_cnt_mat[rowSums(BrU_cnt_mat)>0,]
+```
+
+
+```{r}
+(BrU_coldata <- data.frame(condition = colnames(BrU_cnt_mat)) %>%
+  tidyr::separate(condition, c('siRNA', 'fraction', 'replicate'), by='_', remove=FALSE) %>%
+  remove_rownames %>%
+  column_to_rownames('condition'))
+```
+
+```{r}
+BrUddsFullCountTable <- DESeqDataSetFromMatrix(countData = BrU_cnt_mat,
+                                            colData = BrU_coldata,
+                                            design = ~ siRNA)
+
+BrU_dd_total <- estimateSizeFactors(BrUddsFullCountTable)
+
+(sfs_BrU <- data.frame(sizeFactor = sizeFactors(BrU_dd_total)) %>%
+  rownames_to_column(var='lib') %>%
+  tidyr::separate(lib, c('siRNA', 'fraction', 'rep')))
+```
+
+
+```{r}
+sfs <- bind_rows(sfs_total, sfs_BrU)
+save(sfs, file='../../data/RNAseq_sizeFactors.RData')
+```
+
+
+# sessionInfo
+```{r}
+sessionInfo()
+```

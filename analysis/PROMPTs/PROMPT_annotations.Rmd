@@ -1,0 +1,686 @@
+---
+title: 'MS Gencode PROMPT annotations'
+author: "Manfred Schmid"
+output: 
+  pdf_document:
+    toc: true 
+    toc_depth: 3
+    fig_caption: true
+---
+
+`r format(Sys.time(), "%d %B, %Y; %R")`
+
+## Setup
+
+```{r setup, echo=TRUE}
+knitr::opts_chunk$set(fig.width=12, fig.height=8, 
+                      fig.path=paste0('../../Figures/MS_Gencode_PROMPT_RNAseq_sensitivities_withsizefactors/'), 
+                      dev='pdf', 
+                      echo=TRUE, warning=FALSE, message=FALSE, 
+                      error=TRUE)
+```
+
+```{r load packages, echo=T, warning=F, message=F}
+suppressWarnings(library('tidyverse'))
+suppressWarnings(library('magrittr'))
+suppressWarnings(library('knitr'))
+suppressWarnings(library('broom'))
+```
+
+
+
+### define PROMPT TSS
+
+get PROMPT TSS based on CAGE relative to Gencode GRCh38 v28 annotations
+```{bash, eval=FALSE}
+#cd /home/schmidm/annotations/hg38/Gencode_v28
+#srun --account=thj_common --mem=8g -p express --pty bash
+
+source /com/extra/bedtools/2.25.0/load.sh
+source /com/extra/bedops/2.4.26/load.sh
+
+
+anno_dir="/home/schmidm/annotations/hg38/Gencode_v28/"
+gtf="${anno_dir}gencode.v28.transcripts.gtf"
+
+grep -v ^# $gtf | awk '{OFS="\t"}{print $1"\t"$4-1"\t"$5"\t"$10$12$14$16$18"\t0\t"$7}' > ${gtf/.gtf/.bed}
+
+bed=${gtf/.gtf/.bed}
+wc -l ${bed}
+# 203835 /home/schmidm/annotations/hg38/Gencode_v28/gencode.v28.transcripts.bed
+
+
+## make 1kb upstream antisense (only major chroms and pc pseudo and lncRNA for simplicity)
+
+awk '{OFS="\t"}{
+  if(!($1 ~ /_/) && ($4 ~ /lincRNA/ || $4 ~ /pseudogene/ || $4 ~ /protein/)){
+    if($6=="+"){
+      $3=$2;
+      $2-=1000;
+      if($2 < 0){$2=0};
+      $6="-";
+    }else{
+      $2=$3;
+      $3+=1000;
+      $6="+";
+    };
+    print $1"\t"$2"\t"$3"\tua1kb@"$4"\t"$5"\t"$6
+  }
+}' ${bed} | sort -k1,1 -k2,2n > ${bed/.bed/_pclincpseudo_ua1kb.bed}
+
+wc -l ${bed/.bed/_pclincpseudo_ua1kb.bed}
+#181006 /home/schmidm/annotations/hg38/Gencode_v28/gencode.v28.transcripts_pclincpseudo_ua1kb.bed
+
+
+
+
+##collapse identicals
+bedtools merge -s -c 4,5 -o distinct,distinct -i ${bed/.bed/_pclincpseudo_ua1kb.bed} | awk '{print $1"\t"$2"\t"$3"\t"$5"\t"$6"\t"$4}' > ${bed/.bed/_pclincpseudo_ua1kb_collapsed.bed}
+
+wc -l ${bed/.bed/_pclincpseudo_ua1kb_collapsed.bed}
+#84193 /home/schmidm/annotations/hg38/Gencode_v28/gencode.v28.transcripts_pclincpseudo_ua1kb_collapsed.bed
+
+
+
+
+
+
+##find CAGE clusters in those intervals
+cage_dir="/home/schmidm/faststorage/CAGE/GSE62047_RAW/SRA/remapped_to_hg38/bedgraph/merged/"
+cage_clusters="${cage_dir}CAGE_tpmg01_clustersd20.bed"
+
+bedtools intersect -s -u -a $cage_clusters -b ${bed/.bed/_pclincpseudo_ua1kb_collapsed.bed} > ${bed/.bed/_pclincpseudo_ua1kb_collapsed_withCAGE_tpmg01_clustersd20.bed}
+
+wc -l ${bed/.bed/_pclincpseudo_ua1kb_collapsed_withCAGE_tpmg01_clustersd20.bed}
+#23536 /home/schmidm/annotations/hg38/Gencode_v28/gencode.v28.transcripts_pclincpseudo_ua1kb_collapsed_withCAGE_tpmg01_clustersd20.bed
+
+
+##collapse clusters within 5kb on same strand
+ua_cage="${bed/.bed/_pclincpseudo_ua1kb_collapsed_withCAGE_tpmg01_clustersd20.bed}"
+
+bedtools merge -s -d 5000 -c 4,5 -o collapse,sum -i ${ua_cage} | awk '{print $1"\t"$2"\t"$3"\t"$5"\t"$6"\t"$4}' > ${ua_cage/.bed/_collapsed.bed}
+
+wc -l ${ua_cage/.bed/_collapsed.bed}
+#9880 /home/schmidm/annotations/hg38/Gencode_v28/gencode.v28.transcripts_pclincpseudo_ua1kb_collapsed_withCAGE_tpmg01_clustersd20_collapsed.bed
+
+##within each region find the CAGE cluster with most signal
+bedtools intersect -s -loj -a ${ua_cage/.bed/_collapsed.bed} -b ${cage_clusters} | \
+awk '{
+  if($4 != merged_name){
+    if(chr !=""){
+      print chr"\t"start"\t"end"\t"name"\t"score"\t"strand;
+    }
+    merged_name=$4;chr=$1;start=$8;end=$9;name=$10;score=$11;strand=$12;
+  }else{
+    if((strand == "+" && $11 >= score) || (strand == "-" && $11 > score)){
+      start=$8;end=$9;name=$10;score=$11;
+    }
+  }
+}END{print chr"\t"start"\t"end"\t"name"\t"score"\t"strand;}' > ${ua_cage/.bed/_collapsed_maxCAGE.bed}
+
+wc -l ${ua_cage/.bed/_collapsed_maxCAGE.bed}
+#9880 /home/schmidm/annotations/hg38/Gencode_v28/gencode.v28.transcripts_pclincpseudo_ua1kb_collapsed_withCAGE_tpmg01_clustersd20_collapsed_maxCAGE.bed
+
+awk '$6 =="+"' ${ua_cage/.bed/_collapsed_maxCAGE.bed} | \
+bedtools intersect -loj -a - -b ${cage_dir}all_merged_tpms_plus.bedgraph | \
+awk '{
+  if($4 != merged_name){
+    if(chr !=""){
+      print chr"\t"start"\t"end"\tcenter_of:"merged_name"\t"score"\t"strand;
+    }
+    merged_name=$4;chr=$1;start=$8;end=$9;score=$10;strand=$6;
+  }else{
+    if((strand == "+" && $10 >= score) || (strand == "-" && $10 > score)){
+      start=$8;end=$9;score=$10;
+    }
+  }
+}END{print chr"\t"start"\t"end"\tsummit_of:"merged_name"\t"score"\t"strand;}' > ${ua_cage/.bed/_collapsed_maxCAGE_plus.bed}
+
+awk '$6 =="-"' ${ua_cage/.bed/_collapsed_maxCAGE.bed}  | \
+bedtools intersect -loj -a - -b ${cage_dir}all_merged_tpms_minus.bedgraph | \
+awk '{
+  if($4 != merged_name){
+    if(chr !=""){
+      print chr"\t"start"\t"end"\tcenter_of:"merged_name"\t"score"\t"strand;
+    }
+    merged_name=$4;chr=$1;start=$8;end=$9;score=$10;strand=$6;
+  }else{
+    if((strand == "+" && $10 >= score) || (strand == "-" && $10 > score)){
+      start=$8;end=$9;score=$10;
+    }
+  }
+}END{print chr"\t"start"\t"end"\tcenter_of:"merged_name"\t"score"\t"strand;}' > ${ua_cage/.bed/_collapsed_maxCAGE_minus.bed}
+
+cat ${ua_cage/.bed/_collapsed_maxCAGE_plus.bed} ${ua_cage/.bed/_collapsed_maxCAGE_minus.bed} | sort -k1,1 -k2,2n | awk '{OFS="\t"}{$5=int($5);print $0 }'> ${anno_dir}pclncpseudo_ua_TSSs.bed
+
+wc -l ${anno_dir}pclncpseudo_ua_TSSs.bed
+#9880 /home/schmidm/annotations/hg38/Gencode_v28/pclncpseudo_ua_TSSs.bed
+
+
+
+
+##remove anything overlapping a transcript that is not pseudogene lncRNA or bidirectional or AS RNA
+awk '{split($4,ar,";");print ar[3]}' $bed | sort | uniq -c
+
+awk '!($4 ~ /antisense/ || $4 ~ /lincRNA/ || $4 ~ /pseudogene/ || $4 ~ /lncRNA/)' ${bed} > ${bed/.bed/_NOT_ASlncpseudo.bed}
+
+wc -l ${bed/.bed/_NOT_ASlncpseudo.bed}
+#160981 /home/schmidm/annotations/hg38/Gencode_v28/gencode.v28.transcripts_NOT_ASlncpseudo.bed
+
+#use upstream 5kb of annotation for more rigorous removal of overlaps
+awk '{OFS="\t"}{if($6=="+"){$2-=5000;if($2<0){$2=0}}else{$3+=5000};print $0}' ${bed/.bed/_NOT_ASlncpseudo.bed} > ${bed/.bed/_NOT_ASlncpseudo_TSSm5kb.bed}
+
+bedtools subtract -s -a ${anno_dir}pclncpseudo_ua_TSSs.bed -b ${bed/.bed/_NOT_ASlncpseudo_TSSm5kb.bed} > ${anno_dir}PROMPT_TSSs.bed
+
+wc -l ${anno_dir}PROMPT_TSSs.bed
+#6140 /home/schmidm/annotations/hg38/Gencode_v28/PROMPT_TSSs.bed
+
+
+awk '{OFS="\t"}{if($6=="+"){$3+=1000}else{$2-=1000};print $0}' ${anno_dir}PROMPT_TSSs.bed > ${anno_dir}PROMPT_TSS_to1kb.bed
+
+
+awk '{OFS="\t"}{if($6=="+"){$3+=5000}else{$2-=5000;if($2 < 0){$2=0}};print $0}' ${anno_dir}PROMPT_TSSs.bed > ${anno_dir}PROMPT_TSS_to5kb.bed
+
+## overlaps with Gencode annotations ... ?
+
+bedtools intersect -s -loj -a ${anno_dir}PROMPT_TSS_to5kb.bed -b ${bed} > ${anno_dir}PROMPT_TSS_to5kb_vs_gencodetr.bed
+
+awk '{split($10,ar,";");print ar[3]}' ${anno_dir}PROMPT_TSS_to5kb_vs_gencodetr.bed | sort | uniq -c
+# 4356
+# 2134 "antisense"
+#  118 "bidirectional_promoter_lncRNA"
+#  833 "lincRNA"
+#  101 "processed_pseudogene"
+#  312 "processed_transcript"
+#    3 "pseudogene"
+#   82 "transcribed_processed_pseudogene"
+#  102 "transcribed_unitary_pseudogene"
+#  164 "transcribed_unprocessed_pseudogene"
+#    5 "unitary_pseudogene"
+#   22 "unprocessed_pseudogene"
+
+```
+
+
+
+
+
+### assign PROMPT TES
+
+```{bash, eval=FALSE}
+## get max 3' end within 5kb
+
+source /com/extra/bedtools/2.25.0/load.sh
+cd /home/schmidm/annotations/hg38/Leonor/RNAseq_top_June2019
+
+PROMPT="/home/schmidm/annotations/hg38/Gencode_v28/PROMPT_TSS_to5kb.bed"
+
+guifen_bg_plus="/home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov/Singles_clusters/Singles_union_plus.bedgraph"
+guifen_bg_minus="/home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov/Singles_clusters/Singles_union_minus.bedgraph"
+
+qx --mem=2g sort  -k1,1 -k2,2n $guifen_bg_plus -o $guifen_bg_plus #? -S 2G -T /scratch/$SLURM_JOBID
+qx --mem=2g sort -k1,1 -k2,2n $guifen_bg_minus -o $guifen_bg_minus #? -S 2G -T /scratch/$SLURM_JOBID
+
+
+awk '$6=="+"' $PROMPT | sort -k1,1 -k2,2n > ${PROMPT/.bed/_plus.bed}
+awk '$6=="-"' $PROMPT | sort -k1,1 -k2,2n > ${PROMPT/.bed/_minus.bed}
+
+
+bedtools intersect -sorted -loj -a ${PROMPT/.bed/_plus.bed} -b $guifen_bg_plus | bedtools groupby -g 1,2,3,4,5,6 -c 8,9,10 -o collapse | \
+awk '{OFS="\t"}{
+  n=split($7,starts,",");
+  split($8,ends,",");
+  split($9,vals,",");
+  max_start=starts[1];
+  max_end=ends[1]
+  max_val=vals[1];
+  sum=vals[1]
+  for(i=2;i<=n;i++){
+    if (vals[i] > max_val){
+      max_val = vals[i];
+      max_start=starts[i]
+      max_end=ends[i]
+      sum+=vals[i]
+    }
+  }
+  if(max_start < $2){max_start="NA"}else{max_start+=1}
+  print $1"\t"$2"\t"max_start"\t"$4"\t"$5"\t"$6
+}' > ${PROMPT/.bed/_TSS_toMaxIn5kb_plus.bed}
+
+head ${PROMPT/.bed/_TSS_toMaxIn5kb_plus.bed}
+awk '{print ($3-$2)}' ${PROMPT/.bed/_TSS_toMaxIn5kb_plus.bed} | sort -k1,1n | head -50
+
+awk '$3 == "NA"' ${PROMPT/.bed/_TSS_toMaxIn5kb_plus.bed} | wc -l
+#13
+
+bedtools intersect -sorted -loj -a ${PROMPT/.bed/_minus.bed} -b $guifen_bg_minus | bedtools groupby -g 1,2,3,4,5,6 -c 8,9,10 -o collapse | \
+awk '{OFS="\t"}{
+  n=split($7,starts,",");
+  split($8,ends,",");
+  split($9,vals,",");
+  max_start=starts[1];
+  max_end=ends[1]
+  max_val=vals[1];
+  sum=vals[1]
+  for(i=2;i<=n;i++){
+    if (vals[i] >= max_val){
+      max_val = vals[i];
+      max_start=starts[i]
+      max_end=ends[i]
+      sum+=vals[i]
+    }
+  }
+  if(max_end <= 0 || max_end > $3){max_end="NA"}else{max_end-=1}
+  print $1"\t"max_end"\t"$3"\t"$4"\t"$5"\t"$6
+}' > ${PROMPT/.bed/_TSS_toMaxIn5kb_minus.bed}
+
+awk '$2 == "NA"' ${PROMPT/.bed/_TSS_toMaxIn5kb_minus.bed} | wc -l
+#11
+
+
+cat ${PROMPT/.bed/_TSS_toMaxIn5kb_plus.bed} ${PROMPT/.bed/_TSS_toMaxIn5kb_minus.bed} | sort -k1,1 -k2,2n > ${PROMPT/.bed/_TSS_toMaxIn5kb.bed}
+
+PROMPTs="${PROMPT/.bed/_TSS_toMaxIn5kb.bed}"
+echo $PROMPTs
+
+awk '$3 != "NA" && $2 != "NA"' ${PROMPTs} > ${PROMPTs/.bed/_withend.bed}
+
+wc -l ${PROMPTs}
+#6140 /home/schmidm/annotations/hg38/Gencode_v28/PROMPT_TSS_to5kb_TSS_toMaxIn5kb.bed
+
+
+
+wc -l ${PROMPTs/.bed/_withend.bed}
+#6116 /home/schmidm/annotations/hg38/Gencode_v28/PROMPT_TSS_to5kb_TSS_toMaxIn5kb_withend.bed
+```
+
+## sensitivity of TSS to +1kb based on RNAseq
+
+
+#### get RNAseq read coverage in 1kb regions
+
+```{bash, eval=FALSE}
+#!/bin/sh
+## srun -p express --pty bash
+##cd /home/schmidm/faststorage/Meola/scripts/hg38
+
+source /com/extra/ucsc/2015-04-21/load.sh
+
+
+bed="/home/schmidm/annotations/hg38/Gencode_v28/PROMPT_TSS_to1kb.bed"
+
+#awk '$6=="+"' $bed > ${bed/.bed/_plus.bed}
+#awk '$6=="-"' $bed > ${bed/.bed/_minus.bed}
+
+outdir="/home/schmidm/faststorage/Meola/hg38_bam/MS_Gencode_PROMPT_raw_cnts/"
+mkdir $outdir
+
+plus_bws=$(ls /home/schmidm/faststorage/Meola/hg38_bam/*_hg38_unique_properlypaired_hg38_raw_plus.bw | grep -v RBM7 | grep -v MTR4 | grep -v PABPN1 | grep -v nuclear | grep -v PAP)
+
+for plus_bw in plus_bws
+do
+  base_name=$(echo ${plus_bw//*\//} | sed s/_hg38_unique_properlypaired_hg38_raw_plus.bw//g)
+  echo $base_name
+
+  bigWigAverageOverBed $plus_bw ${bed/.bed/_plus.bed} ${plus_bw/.bw/_MStmp.cnts}
+
+  minus_bw=${plus_bw/_plus.bw/_minus.bw}
+  bigWigAverageOverBed $minus_bw ${bed/.bed/_minus.bed} ${minus_bw/.bw/_MStmp.cnts}
+
+  cat ${plus_bw/.bw/_MStmp.cnts} ${minus_bw/.bw/_MStmp.cnts} > "${outdir}${base_name}_TSSto1kb.cnts"
+
+  rm ${plus_bw/.bw/_MStmp.cnts}
+  rm ${minus_bw/.bw/_MStmp.cnts}
+done
+
+```
+
+
+
+#### load to R
+## load from genome-dk
+```{r}
+path <- '/Volumes/GenomeDK/faststorage/Meola/hg38_bam/MS_Gencode_PROMPT_raw_cnts/'
+fnames <- dir(path) %>% keep(grepl('_TSSto1kb.cnts', .) & !grepl('avg', .))
+
+fnames_sel <- fnames %>% keep(!grepl('^MTR4', .) & !grepl('^RBM7', .) & !grepl('^nuclear', .)& !grepl('^PAP', .) & !grepl('PABP', .))
+
+fnames_sel
+```
+
+```{r}
+(df <- lapply(fnames_sel, function(fname) read_tsv(paste0(path, fname), col_names = c('id', 'size', 'covered', 'sum', 'mean', 'mean0')) %>%
+  dplyr::select(id, sum) %>%
+  mutate(lib = sub('_TSSto1kb.cnts', '', fname),
+         fraction = ifelse(grepl('BrU',lib), 'BrU', 'total'),
+         lib = sub('_BrU', '', fname),
+         id = sub('center_of:', '', id)) %>%
+  tidyr::separate(lib, c('siRNA', 'rep'), sep='_')) %>%
+  bind_rows)
+```
+
+
+```{r density plots signal}
+ggplot(df, aes(x=sum+ .000001, color=siRNA, linetype=rep)) +
+  geom_density() +
+  scale_x_log10() +
+  facet_grid(.~fraction)
+```
+
+
+```{r}
+save(df, file = '../../data/MS_RefSeq_PROMPT_1TSSto1kb_counts.RData')
+```
+
+#### shortcut
+```{r}
+load(file = '../../data/MS_RefSeq_PROMPT_1TSSto1kb_counts.RData', verbose=T)
+df
+```
+
+#### load and apply size Factors
+
+
+```{r}
+load('../../data/RNAseq_sizeFactors.RData', verbose=T)
+sfs
+```
+
+```{r}
+df %<>% left_join(., sfs) %>%
+  mutate(sum = sum/sizeFactor) %>%
+  dplyr::select(-sizeFactor)
+```
+
+
+### make sensitivities
+
+
+```{r}
+(pseudocount <- min(df$sum[df$sum > 0]))
+```
+
+
+```{r}
+gfp <- df %>%
+  filter(siRNA == 'EGFP') %>%
+  group_by(id, fraction) %>%
+  summarize(EGFP_sum = mean(sum))
+
+(sens_df <- df %>%
+  filter(siRNA != 'EGFP') %>%
+  group_by(siRNA, id, fraction) %>%
+  summarize(KD_sum = mean(sum)) %>%
+  left_join(., gfp) %>%
+  mutate(denom=ifelse(KD_sum > EGFP_sum, KD_sum, EGFP_sum),
+         sensitivity = (KD_sum-EGFP_sum)/(denom+pseudocount)))
+```
+
+
+```{r density plots sensitivites}
+ggplot(sens_df, aes(x=sensitivity, color=siRNA)) +
+  geom_density() +
+  facet_grid(.~fraction) +
+  theme_bw() +
+  theme(panel.grid=element_blank())
+```
+
+```{r}
+save(sens_df, file='../../data/MS_RefSeq_PROMPTs_TSSto1kb_sensitivities_withsizeFactors.RData')
+```
+
+```{r}
+load(file='../../data/MS_RefSeq_PROMPTs_TSSto1kb_sensitivities_withsizeFactors.RData', verbose=T)
+sens_df
+```
+
+### Z1 vs Z8 classes
+
+```{r}
+Z1_vs_Z8 <- sens_df %>%
+  dplyr::select(id, siRNA, fraction, sensitivity) %>%
+  spread(siRNA, sensitivity)
+```
+
+
+#### 3 groups
+
+```{r}
+filter(Z1_vs_Z8, id == 'MS_CAGEcluster_minus10004')
+```
+
+```{r}
+(classes3 <- Z1_vs_Z8 %>%
+  filter(fraction == 'total') %>%
+   ungroup %>%
+   mutate(class3 = case_when(.$ZFC3H1 > .5 & .$ZCCHC8 > .5 ~ 'BOTH',
+                             .$ZFC3H1 > .5 ~ 'PAXT',
+                             .$ZCCHC8 > .5 ~ 'NEXT',
+                             .$ZCCHC8 >= -1 ~ 'not sig')) %>%
+  dplyr::select(id, class3))
+```
+
+```{r}
+table(classes3$class3)
+```
+
+
+```{r}
+Z1_vs_Z8 %<>% left_join(., classes3) %>%
+  mutate(class3 = factor(class3, levels=c('PAXT', 'NEXT', 'BOTH', 'not sig')))
+```
+
+
+```{r Z1 vs Z8 sensitivites 2 classes}
+ggplot(Z1_vs_Z8, aes(x=ZCCHC8, y=ZFC3H1, color=class3)) +
+  geom_point(shape=16, alpha=.4, stroke=0, size=2) +
+  coord_fixed() +
+  geom_hline(yintercept = 0) +
+  geom_vline(xintercept = 0) +
+  geom_abline(slope = 1, color='orange') +
+  scale_color_manual(values=c('#1f77b4', '#ff7f0e', 'lightgray', 'lightgray'), na.value='lightgray') +
+  facet_grid(.~fraction) +
+  theme_bw() +
+  theme(panel.grid=element_blank())
+```
+
+
+```{r Z1 vs Z8 sensitivites 3 classes}
+ggplot(Z1_vs_Z8, aes(x=ZCCHC8, y=ZFC3H1, color=class3)) +
+  geom_point(shape=16, alpha=.4, stroke=0, size=2) +
+  coord_fixed() +
+  geom_hline(yintercept = 0) +
+  geom_vline(xintercept = 0) +
+  geom_abline(slope = 1, color='orange') +
+  scale_color_manual(values=c('#1f77b4', '#ff7f0e', '#2ca02c', 'lightgray'), na.value='lightgray') +
+  facet_grid(.~fraction) +
+  theme_bw() +
+  theme(panel.grid=element_blank())
+```
+
+#### histograms
+```{r}
+(sens_df %<>% left_join(., classes3) %>%
+  mutate(class3 = factor(class3, levels=c('PAXT', 'NEXT', 'other'))))
+```
+
+```{r sensitivities histograms without NA 2classes}
+sens_df %>%
+  filter(class3 != 'other') %>%
+  ggplot(., aes(x=sensitivity, fill=class3, alpha=class3)) +
+  geom_histogram(position='identity', bins=43) +
+  scale_fill_manual(values=c('#1f77b4', '#ff7f0e'), na.value='darkgray') +
+  scale_alpha_manual(values=c(1,.5), na.value=.2) +
+  facet_grid(fraction~siRNA) +
+  theme_bw() +
+  theme(panel.grid=element_blank()) +
+  theme(axis.text.x=element_text(angle=45, hjust=1))
+```
+
+
+#### violin-boxplot
+
+```{r sensitivities violin boxplot 2classes}
+sens_df %>%
+  filter(class3 != 'other') %>%
+ggplot(., aes(x=fraction, y=sensitivity, fill=class3, alpha=fraction)) +
+  geom_violin() +
+  geom_boxplot(outlier.shape = NA, width=.2, fill='gray') +
+  geom_hline(yintercept=0, color='orange') +
+  scale_fill_manual(values=c('#1f77b4', '#ff7f0e'), na.value='darkgray') +
+  scale_alpha_manual(values=c(.5, 1), na.value='darkgray') +
+  facet_grid(.~class3+siRNA) +
+  theme_bw() +
+  theme(panel.grid=element_blank()) +
+  theme(axis.text.x=element_text(angle=45, hjust=1))
+```
+
+#### significance BrU vs total change per class
+
+
+```{r}
+sens_df %>%
+  filter(class3 != 'other') %>%
+  group_by(class3, siRNA) %>%
+  do(tidy(wilcox.test(.$sensitivity~.$fraction)))
+```
+
+```{r}
+sens_df %>%
+  filter(class3 != 'other') %>%
+  group_by(class3, siRNA) %>%
+  do(tidy(wilcox.test(.$sensitivity~.$fraction,alternative='greater')))
+```
+
+
+
+
+### 5 groups
+```{r}
+(classes5 <- Z1_vs_Z8 %>%
+  filter(fraction == 'total') %>%
+   ungroup %>%
+   mutate(class5 = case_when(.$ZFC3H1 > .5 & .$ZCCHC8 > .5 ~ 'BOTH',
+                             .$ZFC3H1 > .5 & .$ZCCHC8 > 0 ~ 'PAXT',
+                             .$ZFC3H1 > .5 & .$ZCCHC8 <= 0 ~ 'PAXTonly',
+                             .$ZFC3H1 > 0 & .$ZCCHC8 > .5 ~ 'NEXT',
+                             .$ZCCHC8 > .5 ~ 'NEXTonly',
+                             .$ZCCHC8 >= -1 ~ 'not sig')) %>%
+  dplyr::select(id, class5))
+```
+
+```{r}
+table(classes5$class5)
+```
+
+
+```{r}
+Z1_vs_Z8 %<>% left_join(., classes5) %>%
+  mutate(class5 = factor(class5, levels=c('PAXT', 'NEXT', 'BOTH', 'PAXTonly', 'NEXTonly', 'not sig')))
+```
+
+
+#### scatters
+
+```{r Z1 vs Z8 sensitivites 5 classes}
+ggplot(Z1_vs_Z8, aes(x=ZCCHC8, y=ZFC3H1, color=class5)) +
+  geom_point(shape=16, alpha=.4, stroke=0, size=2) +
+  coord_fixed() +
+  geom_hline(yintercept = 0) +
+  geom_vline(xintercept = 0) +
+  geom_abline(slope = 1, color='orange') +
+  scale_color_manual(values=c('#1f77b4', '#ff7f0e', '#2ca02c', 'navyblue', 'red', 'lightgray'), na.value='lightgray') +
+  facet_grid(.~fraction) +
+  theme_bw() +
+  theme(panel.grid=element_blank())
+```
+
+
+
+
+
+#### save extra classifications
+
+```{r}
+write_tsv(Z1_vs_Z8, '../../data/PROMPT_sensitivities_Z1_Z8_RRP40_withextraclasses_withsizeFactors.txt')
+```
+
+
+#### save Table S1
+
+```{r}
+bedname <- '/Volumes/GenomeDK/annotations/hg38/Gencode_v28/PROMPT_TSS_to5kb_TSS_toMaxIn5kb.bed'
+(PROMPTs <- read_tsv(bedname, col_names=c('chr', 'start', 'end', 'id', 'score', 'strand')) %>% 
+   data.frame %>% tbl_df %>% 
+   mutate(id = sub('center_of:', '', id)) %>% 
+   dplyr::select(-score))
+```
+
+
+#### create and save tables
+
+
+```{r}
+tableS1 <- full_join(PROMPTs, sens_df) %>% 
+  dplyr::mutate(column = paste0('sens_si', siRNA, '_', fraction)) %>%
+  dplyr::select(id, chr, start, end, id, strand, class3, column, sensitivity) %>%
+  tidyr::spread(column, sensitivity)
+
+
+tableS1$PROMPTnr <- paste0('PROMPT',seq(nrow(tableS1)))
+
+(tableS1 <- tableS1[,c('PROMPTnr', 'class3', 'id', 'chr', 'start', 'end', 'strand', 
+                       'sens_siRRP40_total', 'sens_siZCCHC8_total', 'sens_siZFC3H1_total',
+                       'sens_siRRP40_BrU', 'sens_siZCCHC8_BrU', 'sens_siZFC3H1_BrU')])
+```
+
+```{r}
+write.table(tableS1, '../../data/tableS1_MS_Gencode_withsizeFactors.txt', col.names=T, sep='\t', dec=',', quote=F, row.names = F)
+```
+
+#### length
+
+```{r}
+tableS1 <- read_tsv('../../data/tableS1_MS_Gencode_withsizeFactors.txt', locale = locale(decimal_mark = ','))
+```
+
+
+```{r}
+tableS1 %>%
+  mutate(size=end-start) %>%
+  filter(!is.na(size)) %>%
+  group_by(class3) %>%
+  summarize(median_size = median(size))
+```
+
+```{r PROMPT sizes plot 3 classes}
+tableS1 %>%
+  mutate(size=end-start) %>%
+  ggplot(., aes(x=class3, y=size, fill=class3)) +
+  geom_violin() +
+  geom_boxplot(fill='lightgray', width=.1, outlier.shape=NA) +
+  theme_bw() +
+  theme(panel.grid = element_blank())
+```
+
+
+#### numbers of genes up etc
+```{r}
+table(tableS1$class3)
+```
+
+
+```{r}
+tableS1 %>%
+  dplyr::select(contains('sens')) %>%
+  gather(comparison, sens) %>%
+  filter(sens > 0.5) %>%
+  group_by(comparison) %>%
+  summarize(cnt=n())
+```
+
+
+
+```{r}
+sessionInfo()
+```

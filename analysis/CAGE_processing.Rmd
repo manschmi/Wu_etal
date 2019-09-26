@@ -1,0 +1,187 @@
+---
+title: "CAGE data for hg38"
+author: "Manfred Schmid"
+output: pdf_document
+editor_options: 
+  chunk_output_type: console
+---
+`r format(Sys.time(), "%d %B, %Y")`
+
+
+# remap raw reads and create tracks
+
+## download trimming mapping
+
+trimming:
+```{bash, eval=FALSE}
+#!/bin/sh
+# cd /home/schmidm/faststorage/CAGE/scripts/hg38
+# sbatch sra_to_fastq.sh SRR1503228 ##EGFP_1
+# sbatch sra_to_fastq.sh SRR1503229 ##EGFP_2
+# sbatch sra_to_fastq.sh SRR1503230 ##EGFP_3
+# sbatch sra_to_fastq.sh SRR1503231 ##MTR4_1
+# sbatch sra_to_fastq.sh SRR1503232 ##MTR4_2
+# sbatch sra_to_fastq.sh SRR1503233 ##MTR4_3
+# sbatch sra_to_fastq.sh SRR1503234 ##RRP40_1
+# sbatch sra_to_fastq.sh SRR1503235 ##RRP40_2
+# sbatch sra_to_fastq.sh SRR1503236 ##RRP40_3
+
+source /com/extra/SRAtoolkit/2.8.2/load.sh
+source /com/extra/fastx-toolkit/0.0.13/load.sh
+
+cd /home/schmidm/faststorage/CAGE/GSE62047_RAW/SRA
+
+acc=$1
+#acc="SRR1503229"
+
+#for acc in SRR1503230 SRR1503231 SRR1503232 SRR1503233 SRR1503234 SRR1503235 SRR1503236
+#do
+#  chunk13=$(echo $acc | cut -c1-3)
+#  chunk16=$(echo $acc | cut -c1-6)
+#  wget -b "ftp://ftp-trace.ncbi.nih.gov/sra/sra-instant/reads/ByRun/sra/${chunk13}/${chunk16}/${acc}/${acc}.sra"
+#done
+
+fastq-dump "${acc}.sra"
+
+fastx_trimmer -Q 33 -f 12 -l 38 -i "${acc}.fastq" | \
+fastq_quality_filter -Q 33 -q 30 -p 50 -i - > "${acc}_cleaned.fastq"
+
+```
+
+
+put on informative names, map and create coverage tracks
+```{bash, eval=FALSE}
+#!/bin/sh
+# cd /home/schmidm/faststorage/CAGE/scripts/hg38
+# sbatch map_to_hg38.sh SRR1503228 EGFP_1
+# sbatch map_to_hg38.sh SRR1503229 EGFP_2
+# sbatch map_to_hg38.sh SRR1503230 EGFP_3
+# sbatch map_to_hg38.sh SRR1503231 MTR4_1
+# sbatch map_to_hg38.sh SRR1503232 MTR4_2
+# sbatch map_to_hg38.sh SRR1503233 MTR4_3
+# sbatch map_to_hg38.sh SRR1503234 RRP40_1
+# sbatch map_to_hg38.sh SRR1503235 RRP40_2
+# sbatch map_to_hg38.sh SRR1503236 RRP40_3
+set -x
+
+source /com/extra/bowtie2/2.2.8/load.sh
+source /com/extra/samtools/1.6.0/load.sh
+source /com/extra/bedtools/2.25.0/load.sh
+source /com/extra/ucsc/2015-04-21/load.sh
+
+cd /home/schmidm/faststorage/CAGE/GSE62047_RAW/SRA
+
+acc=$1
+name=$2
+#source /com/extra/bowtie/0.12.8/load.sh with settings --strata --best -k 10
+#or:
+#cd /home/schmidm/annotations/hg38
+#wget -b ftp://ftp.ncbi.nlm.nih.gov/genomes/archive/old_genbank/Eukaryotes/vertebrates_mammals/Homo_sapiens/GRCh38/seqs_for_alignment_pipelines/GCA_000001405.15_GRCh38_no_alt_analysis_set.fna.bowtie_index.tar.gz
+#gunzip /home/schmidm/annotations/hg38/GCA_000001405.15_GRCh38_no_alt_analysis_set.fna.bowtie_index.tar.gz
+#tar -xvf /home/schmidm/annotations/hg38/GCA_000001405.15_GRCh38_no_alt_analysis_set.fna.bowtie_index.tar
+
+
+##map
+
+cd /home/schmidm/faststorage/CAGE/GSE62047_RAW/SRA
+
+bowtie2 -x /home/schmidm/annotations/hg38/bowtie2_index/GCA_000001405.15_GRCh38_no_alt_analysis_set.fna.bowtie_index -U ${acc}_cleaned.fastq -S ${name}_cleaned.sam
+
+samtools view -h -Sb -q 10 ${name}_cleaned.sam | samtools sort - ${name}_cleaned
+samtools index ${name}_cleaned.bam
+
+bedtools genomecov -5 -bg -strand + -ibam ${name}_cleaned.bam > ${name}_plus.bedgraph
+bedtools genomecov -5 -bg -strand - -ibam ${name}_cleaned.bam > ${name}_minus.bedgraph
+
+chrom_sizes="/home/schmidm/annotations/hg38/hg38.chrom.sizes"
+bedGraphToBigWig ${name}_plus.bedgraph $chrom_sizes ${name}_plus.bw
+bedGraphToBigWig ${name}_minus.bedgraph $chrom_sizes ${name}_minus.bw
+
+echo "ALL DONE"
+
+```
+
+
+## making of average tracks and clustering of CAGE ends
+
+```{bash, eval=FALSE}
+#!/bin/sh
+
+#srun --mem=8g -p express --pty bash
+
+source /com/extra/bedtools/2.25.0/load.sh
+cd /home/schmidm/faststorage/CAGE/scripts/hg38
+
+bg_dir="/home/schmidm/faststorage/CAGE/GSE62047_RAW/SRA/remapped_to_hg38/bedgraph"
+
+bg_merged_dir="/home/schmidm/faststorage/CAGE/GSE62047_RAW/SRA/remapped_to_hg38/bedgraph/merged"
+
+mkdir $bg_merged_dir
+
+bg_plus_files=$(ls $bg_dir/*_plus.bedgraph | tr "\n" " ")
+bedtools unionbedg -i $bg_plus_files | awk '{print $1"\t"$2"\t"$3"\t"($4+$5+$6+$7+$8+$9+$10+$11+$12)}' > $bg_merged_dir/all_merged_plus.bedgraph
+
+wc -l $bg_merged_dir/all_merged_plus.bedgraph
+#2686598
+
+awk '{sum+=($3-$2)*$4}END{print sum}' $bg_merged_dir/all_merged_plus.bedgraph
+#41120901
+
+bg_minus_files=$(ls $bg_dir/*_minus.bedgraph | tr "\n" " ")
+bedtools unionbedg -i $bg_minus_files | awk '{print $1"\t"$2"\t"$3"\t"($4+$5+$6+$7+$8+$9+$10+$11+$12)}' > $bg_merged_dir/all_merged_minus.bedgraph
+
+wc -l $bg_merged_dir/all_merged_minus.bedgraph
+#2623299
+
+awk '{sum+=($3-$2)*$4}END{print sum}' $bg_merged_dir/all_merged_minus.bedgraph
+#38810468
+
+##tpm_normalize merged tracks
+million_tags=$(awk '{sum+=($3-$2)*$4}END{print sum/1000000}' $bg_merged_dir/all_merged_plus.bedgraph $bg_merged_dir/all_merged_minus.bedgraph)
+echo $million_tags
+#79.9314)
+
+awk -v mtags=${million_tags} '{OFS="\t"}{$4/=mtags; print $0}' $bg_merged_dir/all_merged_plus.bedgraph | sort -k1,1 -k2,2n > $bg_merged_dir/all_merged_tpms_plus.bedgraph
+
+bash ~/ms_tools/MS_Metagene_Tools/clean_bedgraph.sh $bg_merged_dir/all_merged_tpms_plus.bedgraph $bg_merged_dir/all_merged_tpms_clean_plus.bedgraph
+
+awk -v mtags=${million_tags} '{OFS="\t"}{$4/=mtags; print $0}' $bg_merged_dir/all_merged_minus.bedgraph | sort -k1,1 -k2,2n > $bg_merged_dir/all_merged_tpms_minus.bedgraph
+
+bash ~/ms_tools/MS_Metagene_Tools/clean_bedgraph.sh $bg_merged_dir/all_merged_tpms_minus.bedgraph $bg_merged_dir/all_merged_tpms_clean_minus.bedgraph
+
+
+source /com/extra/ucsc/2015-04-21/load.sh
+chroms="/home/schmidm/annotations/hg38/hg38.chrom.sizes"
+
+bedGraphToBigWig $bg_merged_dir/all_merged_tpms_clean_plus.bedgraph $chroms $bg_merged_dir/all_merged_tpms_plus.bw
+
+bedGraphToBigWig $bg_merged_dir/all_merged_tpms_clean_minus.bedgraph $chroms $bg_merged_dir/all_merged_tpms_minus.bw
+
+#skip peaks with tpm < 1
+awk '$4 > 1' $bg_merged_dir/all_merged_tpms_clean_plus.bedgraph > $bg_merged_dir/all_merged_tpms_g1_plus.bedgraph
+
+awk '$4 > 1' $bg_merged_dir/all_merged_tpms_clean_minus.bedgraph > $bg_merged_dir/all_merged_tpms_g1_minus.bedgraph
+
+bedtools merge -d 20 -c 4 -o sum -i $bg_merged_dir/all_merged_tpms_g1_plus.bedgraph > $bg_merged_dir/all_merged_tpms_g1_clustersd20_plus.bedgraph
+
+bedtools merge -d 20 -c 4 -o sum -i $bg_merged_dir/all_merged_tpms_g1_minus.bedgraph > $bg_merged_dir/all_merged_tpms_g1_clustersd20_minus.bedgraph
+
+wc -l $bg_merged_dir/all_merged_tpms_g1_clustersd20_plus.bedgraph
+#11694
+wc -l $bg_merged_dir/all_merged_tpms_g1_clustersd20_minus.bedgraph
+#11498
+
+# cluster peaks with tpm > .1
+awk '$4 > 0.1' $bg_merged_dir/all_merged_tpms_clean_plus.bedgraph | bedtools merge -d 20 -c 4 -o sum -i - > $bg_merged_dir/all_merged_tpms_g01_clustersd20_plus.bedgraph
+
+awk '$4 > 0.1' $bg_merged_dir/all_merged_tpms_clean_minus.bedgraph | bedtools merge -d 20 -c 4 -o sum -i - > $bg_merged_dir/all_merged_tpms_g01_clustersd20_minus.bedgraph
+
+wc -l $bg_merged_dir/all_merged_tpms_g01_clustersd20_plus.bedgraph
+#53005
+wc -l $bg_merged_dir/all_merged_tpms_g01_clustersd20_minus.bedgraph
+#51802
+
+awk '{if(NR==FNR){strand="+";cluster_name="MS_CAGEcluster_plus"NR;}else{strand="-";cluster_name="MS_CAGEcluster_minus"FNR;};print $1"\t"$2"\t"$3"\t"cluster_name"\t"int($4)"\t"strand}' $bg_merged_dir/all_merged_tpms_g1_clustersd20_plus.bedgraph $bg_merged_dir/all_merged_tpms_g1_clustersd20_minus.bedgraph  | sort -k1,1 -k2,2n > $bg_merged_dir/CAGE_clustersd20.bed
+
+awk '{if(NR==FNR){strand="+";cluster_name="MS_CAGEcluster_plus"NR;}else{strand="-";cluster_name="MS_CAGEcluster_minus"FNR;};print $1"\t"$2"\t"$3"\t"cluster_name"\t"int($4)"\t"strand}' $bg_merged_dir/all_merged_tpms_g01_clustersd20_plus.bedgraph $bg_merged_dir/all_merged_tpms_g01_clustersd20_minus.bedgraph  | sort -k1,1 -k2,2n > $bg_merged_dir/CAGE_tpmg01_clustersd20.bed
+```
