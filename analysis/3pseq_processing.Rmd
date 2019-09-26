@@ -1,0 +1,825 @@
+---
+title: '3seq Data Filtering and Mapping'
+author: "Manfred Schmid"
+output: 
+  pdf_document:
+    toc: true 
+    toc_depth: 3
+    fig_caption: true
+---
+
+`r format(Sys.time(), "%d %B, %Y; %R")`
+
+
+## Filtering and Mapping of reads
+
+Using the raw data from Lexogen which are individual raw reads after barcode-splitting but otherwise not trimmed. The mapping strategy is similar to the approach from Schmid et al., 2018 Cell Reports paper. Reads are mapped to human genome GRCh38, using a home-made index for mapping that includes sequences for ERCC spike ins.
+
+```{bash, eval=F}
+#!/bin/sh
+# calls:
+# for f in ../../fastq/*.gz; do sbatch --mem=64g -c 4 fastq_to_bigwig_hg38_ERCC_merged.sh $f; done
+
+gzipped_fastq=$1
+trimmed_fastq=${gzipped_fastq/.fastq.gz/_trimmed_clean.fastq}
+bare_name=$(echo ${gzipped_fastq/*\//} | sed s/.fastq.gz//g)
+
+echo "trimming reads from ${gzipped_fastq}"
+#trim adapters (using bbduk.sh from BBmap suite, installed locally at ~/bin)
+### from BBMap version 35.92
+~/bin/bbmap/bbduk.sh in=$gzipped_fastq out=$trimmed_fastq ref=/home/schmidm/annotations/common/Lexogen_adapters_with_pA.fa.gz k=13 ktrim=r useshortkmers=t mink=5 qtrim=t trimq=10 minlength=20 threads=4
+
+
+outdir="/home/schmidm/faststorage/Guifen/Lexogen_July2018/STAR_map_withERCC/${bare_name}"
+
+##map using STAR
+
+echo "doing STAR_map for ${trimmed_fastq} to ${outdir}"
+
+source /com/extra/samtools/1.6.0/load.sh
+source /com/extra/STAR/2.5.2b/load.sh
+
+STAR \
+--runThreadN 4 \
+--genomeDir /home/schmidm/annotations/hg38_ERCC_merged/STAR_index/ \
+--readFilesIn ${trimmed_fastq} \
+--outFilterType BySJout \
+--outFilterMultimapNmax 20 \
+--outFileNamePrefix ${outdir} \
+--outSAMtype BAM SortedByCoordinate \
+--limitBAMsortRAM 15000000000 \
+--outTmpDir /scratch/$SLURM_JOBID/STAR_tmp
+
+
+
+## index bam
+bam="${outdir}Aligned.sortedByCoord.out.bam"
+
+echo "indexing ${bam}"
+samtools index ${bam}
+
+
+## bam to bedgraph
+echo "converting ${bam} to bedgraph"
+
+python /home/schmidm/faststorage/Lexogen/STAR_map/scripts/Lexogen_bam_to_bedgraph.py $bam
+
+
+## filtering genomic As
+
+source /com/extra/bedtools/2.25.0/load.sh
+
+bg=${bam/.bam/_plus.bedgraph}
+
+echo "filtering genomic A from ${bg}"
+grep ^chr $bg | \
+bedtools subtract -a stdin \
+  -b /home/schmidm/annotations/hg38/Lexogen_pAmask/flagged_A4in6_primary_ucsc_plus.bed | \
+  bedtools subtract -a stdin \
+  -b /home/schmidm/annotations/hg38/Lexogen_pAmask/flagged_A12in18_primary_ucsc_plus.bed > \
+  ${bg/_plus.bedgraph/_primary_ucsc_genomicAfilt_plus.bedgraph}
+
+echo "filtering genomic A from ${bg/_plus.bedgraph/_minus.bedgraph}"
+grep ^chr ${bg/_plus.bedgraph/_minus.bedgraph} | \
+bedtools subtract -a stdin \
+  -b /home/schmidm/annotations/hg38/Lexogen_pAmask/flagged_A4in6_primary_ucsc_minus.bed | \
+  bedtools subtract -a stdin \
+  -b /home/schmidm/annotations/hg38/Lexogen_pAmask/flagged_A12in18_primary_ucsc_minus.bed > \
+  ${bg/_plus.bedgraph/_primary_ucsc_genomicAfilt_minus.bedgraph}
+
+
+## bedgraph to bigwig (not normalized tracks)
+source /com/extra/ucsc/2015-04-21/load.sh
+
+chr_sizes="/home/schmidm/annotations/hg38_ERCC_merged/genomic_canonical_chr.sizes"
+
+bg=${bg/_plus.bedgraph/_primary_ucsc_genomicAfilt_plus.bedgraph}
+echo "converting $bg to bigwig"
+
+bedGraphToBigWig $bg $chr_sizes ${bg/.bedgraph/.bw}
+
+bg=${bg/_plus.bedgraph/_minus.bedgraph}
+
+echo "converting minus strand $bg to bigwig"
+
+bedGraphToBigWig $bg $chr_sizes ${bg/.bedgraph/.bw}
+
+```
+
+
+
+## 3pseq normalization using last exon counts
+
+
+```{r setup, echo=TRUE}
+knitr::opts_chunk$set(fig.width=12, fig.height=8, 
+                      fig.path=paste0('../Figures/3pseq_normalization/'), 
+                      dev='pdf', 
+                      echo=TRUE, warning=FALSE, message=FALSE, 
+                      error=TRUE)
+```
+
+```{r load packages, echo=T, warning=F, message=F}
+suppressWarnings(library('tidyverse'))
+suppressWarnings(library('magrittr'))
+suppressWarnings(library('knitr'))
+suppressWarnings(library('DESeq2'))
+suppressWarnings(library('broom'))
+```
+
+
+
+## count non-normalized RefSeq last-exon coverage
+
+```{bash, eval=F}
+#!/bin/sh
+#call: sbatch --mem=4g count_RefSeq_lastexons.sh
+
+source /com/extra/ucsc/2015-04-21/load.sh
+
+echo "counting Refseq last exons"
+bed_plus="/home/schmidm/annotations/hg38/RefSeq_GRCh38/RefSeqNCBIAll_GRCh38_lastexons_merged_unique_plus.bed"
+bed_minus="/home/schmidm/annotations/hg38/RefSeq_GRCh38/RefSeqNCBIAll_GRCh38_lastexons_merged_unique_minus.bed"
+
+for bw_plus in ../../STAR_map_withERCC/bigwig/*plus.bw
+do
+  echo "counting ${bw_plus}"
+  bigWigAverageOverBed $bw_plus $bed_plus ${bw_plus/.bw/_lastexon.counts}
+
+  bw_minus=${bw_plus/_plus.bw/_minus.bw}
+  echo "counting ${bw_minus}"
+  bigWigAverageOverBed $bw_minus $bed_minus ${bw_minus/.bw/_lastexon.counts}
+
+  cat ${bw_plus/.bw/_lastexon.counts} ${bw_minus/.bw/_lastexon.counts} > ${bw_plus/_plus.bw/_lastexon.counts}
+
+  rm ${bw_plus/.bw/_lastexon.counts}
+  rm ${bw_minus/.bw/_lastexon.counts}
+done
+
+mkdir ../../STAR_map_withERCC/bigwig/lastexon_counts
+mv ../../STAR_map_withERCC/bigwig/*_lastexon.counts ../../STAR_map_withERCC/bigwig/lastexon_counts/
+
+```
+
+
+
+## raw counts to R
+
+#### raw counts July
+
+```{r}
+datadir <- '/Volumes/GenomeDK/faststorage/Guifen/Lexogen_July2018/STAR_map_withERCC/bigwig/lastexon_counts/'
+
+flist <- dir(datadir) %>% 
+  keep(grepl('_lastexon.counts', .) & 
+         !grepl('40si', .) & 
+         !(grepl('ip', .) & grepl('siZFC3H1', .)))
+
+july <- lapply(flist, function(fname) read_tsv(paste0(datadir, fname), col_names = c('name', 'size', 'covered', 'sum', 'mean', 'mean0')) %>%
+  dplyr::select(name, sum) %>%
+  mutate(series = 'July',
+         fname = sub('_lastexon.counts', '', fname))) %>%
+  bind_rows
+```
+
+
+#### raw counts Sept
+
+```{r}
+datadir <- '/Volumes/GenomeDK/faststorage/Guifen/Lexogen_Sept2018/STAR_map_withERCC/bigwig/lastexon_counts/'
+
+flist <- dir(datadir) %>% 
+  keep(grepl('_lastexon.counts', .) & 
+         !grepl('40si', .) & 
+         !(grepl('ip', .)))
+
+sept <- lapply(flist, function(fname) read_tsv(paste0(datadir, fname), col_names = c('name', 'size', 'covered', 'sum', 'mean', 'mean0')) %>%
+  dplyr::select(name, sum) %>%
+  mutate(series = 'Sept',
+         fname = sub('_lastexon.counts', '', fname))) %>%
+  bind_rows
+```
+
+
+#### raw counts Nov
+
+```{r}
+datadir <- '/Volumes/GenomeDK/faststorage/Guifen/Lexogen_Nov2018/STAR_map_withERCC/bigwig/lastexon_counts/'
+
+flist <- dir(datadir) %>% keep(grepl('_lastexon.counts', .))
+
+nov <- lapply(flist, function(fname) read_tsv(paste0(datadir, fname), col_names = c('name', 'size', 'covered', 'sum', 'mean', 'mean0')) %>%
+  dplyr::select(name, sum) %>%
+  mutate(series = 'Nov',
+         fname = sub('_lastexon.counts', '', fname))) %>%
+  bind_rows
+```
+
+
+#### combine
+```{r}
+(df <- bind_rows(july, sept) %>%
+  bind_rows(., nov) %>%
+   tidyr::separate(fname, c('siRNA', 'PAP', 'fraction', 'replicate'), sep='_') %>%
+   mutate(series = ifelse(is.na(replicate), series, paste0(series, 'x', replicate))) %>%
+   dplyr::select(-replicate))
+```
+
+
+select samples reported in the paper:
+```{r}
+(df %<>% 
+   filter(!grepl('40si', siRNA), siRNA != 'siRBM7', 
+          !(series == 'Sept' & fraction == 'ip'), 
+          !(series =='July' & fraction == 'ip' & siRNA == 'siZFC3H1')) %>%
+   mutate(siRNA = sub('\\+', '\\.', siRNA)))
+```
+
+
+#### remove lowly expressed genes
+
+n last exons used:
+```{r}
+distinct(df, name) %>% nrow
+```
+
+
+genes with at least 100 reads in at least 1 library
+
+```{r}
+above100_names <- df %>% 
+  filter(sum > 100) %>% 
+  distinct(name) %$% name
+
+length(above100_names)
+```
+
+should be a reasonable number for good comparison
+
+use this set from now on:
+```{r}
+df %<>%
+  filter(name %in% above100_names)
+```
+
+```{r}
+df %<>%
+  mutate(siRNA = factor(siRNA, levels=c('siGFP', 'siRRP40', 'siZCCHC8', 'siZFC3H1', 'siZCCHC8.ZFC3H1')))
+```
+
+
+#### save locally
+```{r, eval=FALSE}
+save(df, file='../data/last_exon_counts_July_Sept_Nov.RData')
+```
+
+
+#### alt. starting point:
+
+```{r, eval=TRUE}
+load('../data/last_exon_counts_July_Sept_Nov.RData', verbose=T)
+df
+```
+
+
+## raw reads distribution and correlation
+
+#### violin boxplot raw counts
+```{r raw reads violin boxplot all}
+df %>%
+  ggplot(., aes(x=series, y=sum)) +
+  geom_violin(aes(fill=series)) +
+  geom_boxplot(fill='lightgray', width=0.2, outlier.shape=NA) +
+  scale_y_log10() +
+  facet_grid(PAP+fraction~siRNA) +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=45, hjust=1))
+```
+
+--> clearly some differences between the libraries
+
+
+## normalize data based on geometric mean of expressed clusters
+
+#### geom mean normalization
+
+
+use exp^(mean of log(counts)) for normalization
+```{r}
+(geom_mean_sf <- df %>%
+  group_by(siRNA, series, fraction, PAP) %>%
+  summarize(geom_mean = exp(mean(log(sum+1)))) %>%
+  ungroup %>%
+  mutate(geom_mean_sf = geom_mean/mean(geom_mean)))
+```
+
+```{r}
+plot(geom_mean_sf~geom_mean, data=geom_mean_sf)
+```
+
+
+#### geom mean scaled reads violin boxplot
+
+```{r geom mean scaled reads violin boxplot all}
+df %>%
+  left_join(., geom_mean_sf) %>%
+  mutate(geom_mean_scaled_sum = sum/geom_mean_sf) %>%
+  ggplot(., aes(x=series, y=geom_mean_scaled_sum)) +
+  geom_violin(aes(fill=series)) +
+  geom_boxplot(fill='lightgray', width=0.2, outlier.shape=NA) +
+  scale_y_log10() +
+  facet_grid(PAP+fraction~siRNA) +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=45, hjust=1))
+```
+
+```{r geom mean scaled reads means and medians}
+df %>%
+  left_join(., geom_mean_sf) %>%
+  mutate(geom_mean_scaled_sum = sum/geom_mean_sf) %>%  
+  group_by(series, siRNA, PAP, fraction) %>%
+  do(tidy(summary(.$geom_mean_scaled_sum))) %>%
+  ggplot(.) +
+  geom_point(aes(x=series, y=median), shape=1) +
+  geom_point(aes(x=series, y=mean), shape=2, color='blue') +
+  ylab('geom mean scaled last exon counts\nmedian=black circles    mean=blue triangles') +
+  facet_grid(PAP+fraction~siRNA) +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=45, hjust=1))
+```
+
+
+## use DESeq2 size factors
+
+```{r}
+cnt_mat <- df %>%
+  unite(library, c(series, siRNA, PAP, fraction)) %>%
+  spread(library, sum) %>%
+  data.frame %>%
+  column_to_rownames('name')
+
+head(cnt_mat)
+```
+
+```{r}
+col_data <- data.frame(library=colnames(cnt_mat)) %>%
+  separate(library, c('series', 'siRNA', 'PAP', 'fraction'), sep='_')
+
+rownames(col_data) <- colnames(cnt_mat)
+
+col_data
+```
+
+
+```{r}
+ds <- DESeqDataSetFromMatrix(cnt_mat, col_data, design = ~ siRNA+PAP+fraction+series)
+
+ds <- estimateSizeFactors(ds)
+```
+
+
+## compare geom mean with DESeq2
+
+```{r}
+sfs_combined <- left_join(geom_mean_sf, data.frame(colData(ds)))
+```
+
+```{r geom mean vs DESeq2 sizefactors}
+plot(geom_mean_sf~sizeFactor, data=sfs_combined)
+abline(lm(geom_mean_sf~sizeFactor, data=sfs_combined))
+abline(lm(geom_mean_sf~sizeFactor+0, data=sfs_combined), col='orange')
+
+```
+
+--> DESeq2 and geom mean normalization are very similar, as expected.
+
+```{r}
+lm(geom_mean_sf~sizeFactor, data=sfs_combined)
+```
+
+```{r}
+lm(geom_mean_sf~sizeFactor +0, data=sfs_combined)
+```
+
+--> slightly offset for some reason
+
+```{r}
+sfs_combined %>%
+  mutate(sf_ratio = sizeFactor/geom_mean_sf) %>%
+  ungroup %$%
+  summary(.$sf_ratio)
+```
+pretty stable ratio without strong outliers ...
+
+```{r DESeq sizefactor scaled reads violin boxplot all}
+df %>%
+  left_join(., sfs_combined) %>%
+  mutate(sizeFactor_scaled_sum = sum/sizeFactor) %>%
+  ggplot(., aes(x=series, y=sizeFactor_scaled_sum)) +
+  geom_violin(aes(fill=series)) +
+  geom_boxplot(fill='lightgray', width=0.2, outlier.shape=NA) +
+  scale_y_log10() +
+  facet_grid(PAP+fraction~siRNA) +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=45, hjust=1))
+```
+
+
+```{r DESeq sizefactor scaled reads means and medians}
+df %>%
+  left_join(., sfs_combined) %>%
+  mutate(sizeFactor_scaled_sum = sum/sizeFactor) %>%
+  group_by(series, siRNA, PAP, fraction) %>%
+  do(tidy(summary(.$sizeFactor_scaled_sum))) %>%
+  ggplot(.) +
+  geom_point(aes(x=series, y=median), shape=1) +
+  geom_point(aes(x=series, y=mean), shape=2, color='blue') +
+  ylab('sizeFactor scaled last exon counts\nmedian=black circles    mean=blue triangles') +
+  facet_grid(PAP+fraction~siRNA) +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=45, hjust=1))
+```
+
+
+
+## use spike-in normalization
+
+#### spike in ids
+
+6 from the ERCC set were used for in vitro transcription, where 3 were selected for in vitro transcription in the presence of 4sUTP.
+```{r}
+(home_made_spike_info <- data.frame(home_name = c('chrS12', 'chrS9', 'chrS8', 'chrS5', 'chrS4', 'chrS2'),
+                         spike = c('ERCC-00170','ERCC-00002','ERCC-00092',
+                                   'ERCC-00145','ERCC-00136','ERCC-00043'),
+                         labelled = c(FALSE, FALSE, TRUE, FALSE, TRUE, TRUE), 
+                         home_made = TRUE,
+                         stringsAsFactors = FALSE))
+```
+
+#### spike counts
+ 
+spikes are counted from raw bedgraphs
+ 
+```{bash, eval=FALSE}
+source /com/extra/samtools/1.6.0/load.sh
+
+rm bedgraph_spike.counts
+for bg in /home/schmidm/faststorage/Guifen/Lexogen_Nov2018/STAR_map_withERCC/*/*.out_plus.bedgraph
+  do
+    echo $bg
+    grep ^ERCC $bg | awk -v fname=${bg} '{if($1 ~ /^ERCC/){if(chr==$1){sum+=($4*($3-$2))}else{print fname"\t"chr"\t"sum;chr=$1;sum=0}}}END{print fname"\t"chr"\t"sum}' | sed 1d >> bedgraph_spike.counts
+  done
+```
+ 
+ 
+#### load July spikes to R
+```{r}
+(July_spikes <- read_tsv('/Volumes/GenomeDK/faststorage/Guifen/Lexogen_July2018/scripts/count_spikes/bedgraph_spike.counts', col_names = c('lib', 'spike', 'reads')))
+```
+
+```{r}
+(July_barcodes <- read_tsv('/Volumes/GenomeDK/faststorage/Guifen/Lexogen_July2018/barcode_tab.txt', col_names = c('lib', 'lib_name')))
+```
+
+```{r}
+July_spikes %<>% 
+  mutate(series='July',
+         lib=sub('.*\\/', '', lib) %>% sub('_001Aligned.sortedByCoord.out_plus.bedgraph', '', .)) %>%
+  left_join(., July_barcodes) %>%
+  filter(!(grepl('ip', lib_name) & grepl('siZFC3H1', lib_name)),
+         !grepl('40si', lib_name))
+```
+
+
+```{r}
+(Sept_spikes <- read_tsv('/Volumes/GenomeDK/faststorage/Guifen/Lexogen_Sept2018/scripts/spikes/bedgraph_spike.counts', col_names = c('lib', 'spike', 'reads')))
+```
+
+```{r}
+(Sept_barcodes <- read_tsv('/Volumes/GenomeDK/faststorage/Guifen/Lexogen_Sept2018/barcode_tab.txt', col_names = c('lib', 'lib_name')))
+```
+
+```{r}
+Sept_spikes %<>% 
+  mutate(series='Sept',
+         lib=sub('.*STAR_map_withERCC\\/', '', lib) %>% sub('_R1_001Aligned.sortedByCoord.out_plus.bedgraph', '', .)) %>%
+  left_join(., Sept_barcodes) %>%
+  filter(!(grepl('ip', lib_name)),
+         !grepl('40si', lib_name))
+```
+
+
+```{r}
+(Nov_spikes <- read_tsv('/Volumes/GenomeDK/faststorage/Guifen/Lexogen_Nov2018/scripts/spikes/bedgraph_spike.counts', col_names = c('lib', 'spike', 'reads')))
+```
+
+```{r}
+(Nov_barcodes <- read_tsv('/Volumes/GenomeDK/faststorage/Guifen/Lexogen_Nov2018/barcode.tab', col_names = c('lib', 'lib_name')))
+```
+
+```{r}
+Nov_spikes %<>% 
+  mutate(series='Nov',
+         lib=sub('.*STAR_map_withERCC\\/', '', lib) %>% sub('_R1_001Aligned.sortedByCoord.out_plus.bedgraph', '', .)) %>%
+  left_join(., Nov_barcodes)
+```
+
+
+```{r}
+(spike_df <- bind_rows(July_spikes, Sept_spikes, Nov_spikes) %>%
+  separate(lib_name, c('siRNA', 'PAP', 'fraction', 'replicate'), sep='_', remove=FALSE) %>%
+  left_join(., home_made_spike_info) %>%
+  mutate(siRNA = sub('\\+', '.', siRNA),
+    class = case_when(is.na(home_made) ~ 'ERCC',
+                        labelled ~ 'labelled_spike',
+                        !labelled ~ 'unlabelled_spike'),
+         series=ifelse(is.na(replicate), series, paste0(series,'x',replicate))) %>%
+   filter(!(fraction == 'ip' & class == 'ERCC')) %>%
+    dplyr::select(spike, reads, series, siRNA, PAP, fraction, class)
+)
+```
+
+```{r}
+spike_df %<>%
+  filter(siRNA != 'siRBM7') %>%
+  mutate(siRNA = factor(siRNA, levels=c('siGFP', 'siRRP40', 'siZCCHC8', 'siZFC3H1', 'siZCCHC8.ZFC3H1')))
+```
+
+
+
+#### raw spike counts
+
+```{r spike raw counts jitter}
+spike_df %>%
+ggplot(., aes(x=series, y=reads+1, 
+              color=class,
+              alpha=class)) +
+  geom_jitter() +
+  scale_y_log10() +
+  facet_grid(fraction~PAP+siRNA, scales='free') +
+  theme_bw() + 
+  theme(axis.text.x=element_text(angle=45, hjust=1)) +
+  scale_size_discrete(range=c(1,2)) +
+  scale_alpha_discrete(range=c(.4,1))
+```
+
+--> seems to contains some spikes with very low read number 
+--> remove those
+
+#### remove very low abundant spikes
+```{r}
+(in_all_spikes <- spike_df %>%
+  group_by(spike) %>%
+  summarize(min_reads = min(reads)) %>%
+  filter(min_reads > 10) %$%
+  spike)
+```
+
+
+```{r}
+spike_df %<>% filter(spike %in% in_all_spikes)
+```
+
+
+```{r spike raw counts jitter after removal of low ones}
+spike_df %>%
+ggplot(., aes(x=series, y=reads, 
+              color=class,
+              alpha=class)) +
+  geom_jitter() +
+  scale_y_log10() +
+  facet_grid(fraction~PAP+siRNA, scales='free') +
+  theme_bw() + 
+  theme(axis.text.x=element_text(angle=45, hjust=1)) +
+  scale_size_discrete(range=c(1,2)) +
+  scale_alpha_discrete(range=c(.4,1))
+```
+
+
+#### save raw spike counts
+
+```{r}
+save(spike_df, file='../data/spike_in_counts.RData')
+```
+
+
+
+#### spike-derived size factors
+
+Idea scale each spike across all samples and then take the mean of those relative spike abundacnes
+```{r}
+(rel_spike_df <- spike_df %>% 
+  filter(reads > 0,
+         !(class == 'ERCC' & fraction == 'ip'),
+         !(class == 'unlabelled_spike' & fraction == 'ip')) %>%
+  group_by(spike, class) %>%
+  mutate(rel_spike_reads = reads/mean(reads)))
+```
+
+
+```{r spike relative reads jitter}
+rel_spike_df %>%
+ggplot(., aes(x=series, y=rel_spike_reads, 
+              color=class,
+              alpha=class)) +
+  geom_jitter() +
+  scale_y_log10() +
+  facet_grid(fraction~PAP+siRNA, scales='free') +
+  theme_bw() + 
+  theme(axis.text.x=element_text(angle=45, hjust=1)) +
+  scale_size_discrete(range=c(1,2)) +
+  scale_alpha_discrete(range=c(.4,1))
+```
+
+
+#### spike size-factors
+```{r}
+(spike_sf <- rel_spike_df %>%
+  group_by(series, siRNA, PAP, fraction) %>%
+  summarize(spike_sf = mean(rel_spike_reads)))
+```
+
+
+
+```{r spike relative reads jitter with sf}
+rel_spike_df %>%
+ggplot(., aes(x=series, y=rel_spike_reads, 
+              color=class,
+              alpha=class)) +
+  geom_jitter() +
+  scale_y_log10() +
+  geom_point(data=spike_sf, aes(x=series, y=spike_sf), shape=3, color='black', alpha=1) +
+  facet_grid(PAP+fraction~siRNA, scales='free') +
+  theme_bw() + 
+  theme(axis.text.x=element_text(angle=45, hjust=1)) +
+  scale_size_discrete(range=c(1,2)) +
+  scale_alpha_discrete(range=c(.4,1))
+```
+
+
+
+#### spike_sf scaled reads violin boxplot
+
+```{r spike sf scaled reads violin boxplot all}
+df %>%
+  left_join(., spike_sf) %>%
+  mutate(spike_sf_scaled_sum = sum/spike_sf) %>%
+  ggplot(., aes(x=series, y=spike_sf_scaled_sum)) +
+  geom_violin(aes(fill=series)) +
+  geom_boxplot(fill='lightgray', width=0.2, outlier.shape=NA) +
+  scale_y_log10() +
+  facet_grid(PAP+fraction~siRNA) +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=45, hjust=1))
+```
+
+```{r spike sf scaled reads means and medians}
+df %>%
+  left_join(., spike_sf) %>%
+  mutate(spike_sf_scaled_sum = sum/spike_sf) %>%
+  group_by(series, siRNA, PAP, fraction) %>%
+  do(tidy(summary(.$spike_sf_scaled_sum))) %>%
+  ggplot(.) +
+  geom_point(aes(x=series, y=median), shape=1) +
+  geom_point(aes(x=series, y=mean), shape=2, color='blue') +
+  ylab('spike sf scaled last exon counts\nmedian=black circles    mean=blue triangles') +
+  facet_grid(PAP+fraction~siRNA) +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=45, hjust=1))
+```
+
+--> clearly some outliers ie Novxrep1 no PAP IP in some samples
+--> possibly a technical issue since no general siRNA-related trend
+--> use DESeq2 sizeFactors for scaling
+
+
+#### compare spikes to last exon DESeq2 size factors
+```{r}
+sfs_x_spike_df <- left_join(sfs_combined, spike_sf)
+```
+
+
+```{r geom_mean_sf vs spike_sf}
+sfs_x_spike_df %>%
+ggplot(., aes(x=geom_mean_sf, y=spike_sf, 
+              shape=series,
+              color=siRNA)) +
+  geom_point() +
+  facet_wrap(~fraction+PAP, scales='free') +
+  geom_smooth(method='lm', aes(x=geom_mean_sf, y=spike_sf), inherit.aes=F) +
+  theme_bw()
+```
+
+--> spike counts show strong series specific biases ! Hence, suboptimal for normalization
+
+
+
+## save norm factors 
+
+#### ups need to add barcode infos
+
+```{r}
+(July_barcodes %<>%
+  mutate(series = 'July'))
+
+(Sept_barcodes %<>%
+  mutate(series = 'Sept'))
+
+(Nov_barcodes %<>%
+  mutate(series = 'Nov'))
+```
+
+
+```{r}
+barcodes <- bind_rows(July_barcodes, Sept_barcodes, Nov_barcodes) %>%
+  filter(!grepl('RBM7', lib_name)) %>%
+  mutate(lib_name = sub('\\+', '.', lib_name))
+```
+
+
+
+```{r}
+nfs <- sfs_x_spike_df %>%
+  dplyr::select(siRNA, series, fraction, PAP, geom_mean_sf, sizeFactor, spike_sf) %>%
+  tidyr::separate(series, c('series', 'replicate'), sep='x') %>%
+  unite(lib_name, c(siRNA, PAP, fraction, replicate), sep='_') %>%
+  mutate(lib_name = sub('_NA', '', lib_name),
+         bg_bam_dir = paste0('Lexogen_', sub('_.*', '', series), '2018/STAR_map_withERCC')) %>%
+  left_join(., barcodes)
+```
+
+```{r}
+kable(nfs)
+```
+
+```{r}
+write_tsv(nfs, '../data/last_exon_sizeFactors.table', col_names = T)
+```
+
+
+## make geom mean normalized average tracks
+
+```{bash, eval=FALSE}
+#!/bin/sh
+#call: sbatch norm_and_avg_replicates_geommean_lastexon_sf.sh
+#srun --mem=2g -p express --pty bash
+
+cd /home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov
+source /com/extra/bedtools/2.25.0/load.sh
+
+sizeFactors="/home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov/last_exon_sizeFactors.table"
+
+source /com/extra/ucsc/2015-04-21/load.sh
+chroms="/home/schmidm/annotations/hg38/hg38.chrom.sizes"
+
+for k in siGFP siRBM7 siZCCHC8 siZFC3H1 siRRP40 siZCCHC8.ZFC3H1
+do
+  for p in noPAP xPAP
+  do
+    for f in in ip
+    do
+      echo "$k $p $f"
+      cat $sizeFactors | awk -v KD="$k" -v P="$p" -v F="$f" '{OFS="\t"}{sub("_rep.","",$1); if($1 == KD"_"P"_"F){print $0}}' > rows
+
+      sfs=$(cat rows | cut -f 3)
+
+      for strand in plus minus
+      do
+        #strand="plus"
+        echo " doing $strand strand"
+
+        bgs=$(cat rows | awk -v strand=$strand '{sub("_R1","",$7);print "/home/schmidm/faststorage/Guifen/"$6"/"$7"_R1_001Aligned.sortedByCoord.out_primary_ucsc_genomicAfilt_"strand".bedgraph"}')
+
+        avg_bg="/home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov/norm_replicate_avgs/norm_${k}_${p}_${f}_avg_${strand}.bedgraph"
+
+        echo "     averaging begraphs: "
+        ls $bgs
+        echo "using sizeFactors:"
+        echo "     $sfs"
+        echo "putting into:"
+        echo "     $avg_bg"
+
+        bedtools unionbedg -i $bgs | \
+        awk -v sfs="${sfs}" '{
+          n=split(sfs,ar," ");
+          for(i=1;i<=n;i++){
+            sum+=($(i+3)/ar[i])
+          };
+          print $1"\t"$2"\t"$3"\t"sum/n;
+          sum=0;
+        }' > $avg_bg
+
+        echo "     converting to bigwig"
+        bedGraphToBigWig $avg_bg $chroms ${avg_bg/.bedgraph/.bw}
+
+      done
+    done
+  done
+done
+```
+
+
+## sessionInfo
+```{r}
+sessionInfo()
+```
