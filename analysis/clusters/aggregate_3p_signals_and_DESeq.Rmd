@@ -1,0 +1,923 @@
+---
+title: 'aggregate genome-wide 3p end data'
+author: "Manfred Schmid"
+output: 
+  pdf_document:
+    toc: true 
+    toc_depth: 3
+    fig_caption: true
+editor_options: 
+  chunk_output_type: console
+---
+
+`r format(Sys.time(), "%d %B, %Y; %R")`
+
+```{r setup, echo=TRUE}
+knitr::opts_chunk$set(fig.width=12, fig.height=8, 
+                      fig.path=paste0('../Figures/DESeq2_clusters/'), 
+                      dev='pdf', 
+                      echo=TRUE, warning=FALSE, message=FALSE, 
+                      error=TRUE)
+```
+
+```{r load packages, echo=T, warning=F, message=F}
+suppressWarnings(library('tidyverse'))
+suppressWarnings(library('magrittr'))
+suppressWarnings(library('knitr'))
+suppressWarnings(library('DESeq2'))
+```
+
+
+## aggregate signals into clusters
+
+```{bash, eval=FALSE}
+#use combined single EGFP, RRP40,ZFC3H1 and ZCCHC8 KD tracks to call clusters
+
+srun --mem=4g -p express --pty bash
+cd /home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov
+source /com/extra/bedtools/2.25.0/load.sh
+source /com/extra/ucsc/2015-04-21/load.sh
+
+chrs="/home/schmidm/annotations/hg38/hg38.chrom.sizes"
+
+
+## 1. combine all valid single KD tracks
+basedir="/home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov/Singles_clusters"
+
+mkdir $basedir
+
+basename="${basedir}/Singles_union"
+#### PLUS STRAND CLUSTERS
+
+bgs=$(ls /home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov/norm_replicate_avgs/norm_*plus.bedgraph | grep -E '_siZFC3H1_|_siZCCHC8_|_siRRP40_|_siGFP' | tr "\n" " ")
+
+bedtools unionbedg -i $bgs | \
+awk '{
+  for(i=4;i<=NF;i++){
+    sum += $i
+  }
+  print $1"\t"$2"\t"$3"\t"sum
+  sum=0
+}' > "${basename}_plus.bedgraph"
+
+bedGraphToBigWig "${basename}_plus.bedgraph" $chrs "${basename}_plus.bw"
+
+wc -l "${basename}_plus.bedgraph"
+# 17407057 /home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov/Singles_clusters/Singles_union_plus.bedgraph
+
+awk '{sum+=($3-$2)}END{print sum}' "${basename}_plus.bedgraph"
+# 17581084  --> total positions covered
+
+awk '{sum+=($4*($3-$2))}END{print sum}' "${basename}_plus.bedgraph"
+# 1.11177e+08 --> total signal
+
+
+
+#### MINUS STRAND CLUSTERS
+bgs=$(ls /home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov/norm_replicate_avgs/norm_*minus.bedgraph | grep -E '_siZFC3H1_|_siZCCHC8_|_siRRP40_|_siGFP' | tr "\n" " ")
+
+bedtools unionbedg -i $bgs | \
+awk '{
+  for(i=4;i<=NF;i++){
+    sum += $i
+  }
+  print $1"\t"$2"\t"$3"\t"sum
+  sum=0
+}' > "${basename}_minus.bedgraph"
+
+bedGraphToBigWig "${basename}_minus.bedgraph" $chrs "${basename}_minus.bw"
+
+wc -l "${basename}_minus.bedgraph"
+# 16699946 /home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov/Singles_clusters/Singles_union_minus.bedgraph
+
+awk '{sum+=($3-$2)}END{print sum}' "${basename}_minus.bedgraph"
+# 16866447 --> positions covered
+
+awk '{sum+=($4*($3-$2))}END{print sum}' "${basename}_minus.bedgraph"
+# 1.0568e+08 --> total signal
+
+## 2. remove peaks with signal below 2 and merge with distance=25
+
+for strand in plus minus
+do
+  echo $strand
+  cat "${basename}_${strand}.bedgraph" | \
+  awk '$4 > 2' | \
+  bedtools merge -d 25 -c 4 -o sum -i stdin > "${basename}_filtg2_merged25_${strand}.bedgraph"
+
+  bedGraphToBigWig "${basename}_filtg1_merged25_${strand}.bedgraph" $chrs "${basename}_filtg2_merged25_${strand}.bw"
+done
+
+wc -l "${basename}_filtg2_merged25_plus.bedgraph"
+#1050073 /home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov/Singles_clusters/Singles_union_filtg2_merged25_plus.bedgraph
+
+wc -l "${basename}_filtg2_merged25_minus.bedgraph"
+#1006243 /home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov/Singles_clusters/Singles_union_filtg2_merged25_minus.bedgraph
+
+
+for strand in plus minus
+do
+  echo $strand
+  cat "${basename}_${strand}.bedgraph" | \
+  awk '($4/($3-$2)) > 5' | \
+  bedtools merge -d 25 -c 4 -o sum -i stdin > "${basename}_filtgm5_merged25_${strand}.bedgraph"
+
+  bedGraphToBigWig "${basename}_filtgm5_merged25_${strand}.bedgraph" $chrs "${basename}_filtgm5_merged25_${strand}.bw"
+done
+
+wc -l "${basename}_filtgm5_merged25_plus.bedgraph"
+# 287214 /home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov/Singles_clusters/Singles_union_filtgm5_merged25_plus.bedgraph
+wc -l "${basename}_filtgm5_merged25_minus.bedgraph"
+# 274423 /home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov/Singles_clusters/Singles_union_filtgm5_merged25_minus.bedgraph
+
+awk '{sum+=($3-$2)}END{print sum}' "${basename}_filtgm5_merged25_plus.bedgraph"
+# 2460967 --> positions covered
+
+awk '{sum+=$4}END{print sum}' "${basename}_filtgm5_merged25_plus.bedgraph"
+# 9.17237e+07 --> not exact, but close to reflect total signal
+
+awk '{sum+=($3-$2)}END{print sum}' "${basename}_filtgm5_merged25_minus.bedgraph"
+# 2355118 --> positions covered
+
+awk '{sum+=$4}END{print sum}' "${basename}_filtgm5_merged25_minus.bedgraph"
+# 8.69593e+07 --> close to total signal
+
+
+#### 3. filter clusters with >20 value
+
+for strand in plus minus
+do
+  echo $strand
+  awk '$4 > 20' "${basename}_filtgm5_merged25_${strand}.bedgraph" > "${basename}_filtgm5_merged25_filtg20_${strand}.bedgraph"
+
+  wc -l "${basename}_filtgm5_merged25_filtg20_${strand}.bedgraph"
+  # plus
+  # 106763 /home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov/Singles_clusters/Singles_union_filtgm5_merged25_filtg20_plus.bedgraph
+  #minus
+  # 101306 /home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov/Singles_clusters/Singles_union_filtgm5_merged25_filtg20_minus.bedgraph
+
+  bedGraphToBigWig "${basename}_filtgm5_merged25_filtg20_${strand}.bedgraph" $chrs "${basename}_filtgm5_merged25_filtg20_${strand}.bw"
+done
+
+awk '{sum+=($3-$2)}END{print sum}' "${basename}_filtgm5_merged25_filtg20_plus.bedgraph"
+# 2068214 --> positions covered
+
+awk '{sum+=$4}END{print sum}' "${basename}_filtgm5_merged25_filtg20_plus.bedgraph"
+# 9.00692e+07 --> not exact, but close to reflect total signal
+
+awk '{sum+=($3-$2)}END{print sum}' "${basename}_filtgm5_merged25_filtg20_minus.bedgraph"
+# 1980072 --> positions covered
+
+awk '{sum+=$4}END{print sum}' "${basename}_filtgm5_merged25_filtg20_minus.bedgraph"
+# 8.53719e+07 --> not exact, but close to reflect total signal
+
+
+
+## 4. convert to bed and add center of mass ie the so-called summit position
+
+strand="plus"
+bedtools intersect -sorted -loj -a "${basename}_filtgm5_merged25_filtg20_${strand}.bedgraph" -b "${basename}_${strand}.bedgraph" | \
+awk -v maxv=0 '{OFS="\t"}{
+  if(chr==$1 && start==$2 && end == $3){
+    if($8>maxv){
+      maxv=$8
+      pos=$6
+    }
+  }else{
+    if(maxv > 0){
+      print chr"\t"start"\t"end"\t"cluster":"pos"\t"score"\t+"
+    }
+    chr=$1
+    start=$2
+    end=$3
+    score=0
+    i+=1
+    cluster="cp"i
+    maxv=$8
+    pos=$6
+  }
+}END{
+  print chr"\t"start"\t"end"\t"cluster":"pos"\t"score"\t+"
+}' > "${basename}_filtgm5_merged25_filtg20_with_center_${strand}.bed"
+
+paste "${basename}_filtgm5_merged25_filtg20_${strand}.bedgraph" "${basename}_filtgm5_merged25_filtg20_with_center_${strand}.bed" | awk '$1 != $5 || $2 != $6' | head
+#all correct
+
+paste "${basename}_filtgm5_merged25_filtg20_${strand}.bedgraph" "${basename}_filtgm5_merged25_filtg20_with_center_${strand}.bed" | awk '{score=int($4);name=$8;strand=$10;print $1"\t"$2"\t"$3"\t"name"\t"score"\t"strand}' > "${basename}_filtg
+m5_merged25_filtg20_with_center_and_score_${strand}.bed"
+
+strand="minus"
+bedtools intersect -sorted -loj -a "${basename}_filtgm5_merged25_filtg20_${strand}.bedgraph" -b "${basename}_${strand}.bedgraph" | \
+awk -v maxv=0 '{OFS="\t"}{
+  if(chr==$1 && start==$2 && end == $3){
+    if($8>=maxv){
+      maxv=$8
+      pos=$6
+    }
+  }else{
+    if(maxv > 0){
+      print chr"\t"start"\t"end"\t"cluster":"pos"\t"score"\t-"
+    }
+    chr=$1
+    start=$2
+    end=$3
+    score=0
+    i+=1
+    cluster="cm"i
+    maxv=$8
+    pos=$6
+  }
+}END{
+  print chr"\t"start"\t"end"\t"cluster":"pos"\t"score"\t+"
+}' > "${basename}_filtgm5_merged25_filtg20_with_center_${strand}.bed"
+
+
+paste "${basename}_filtgm5_merged25_filtg20_${strand}.bedgraph" "${basename}_filtgm5_merged25_filtg20_with_center_${strand}.bed" | awk '$1 != $5 || $2 != $6' | head
+#all correct
+
+paste "${basename}_filtgm5_merged25_filtg20_${strand}.bedgraph" "${basename}_filtgm5_merged25_filtg20_with_center_${strand}.bed" | awk '{score=int($4);name=$8;strand=$10;print $1"\t"$2"\t"$3"\t"name"\t"score"\t"strand}' > "${basename}_filtg
+m5_merged25_filtg20_with_center_and_score_${strand}.bed"
+
+
+cat "${basename}_filtgm5_merged25_filtg20_with_center_plus.bed" "${basename}_filtgm5_merged25_filtg20_with_center_minus.bed" | \
+sort -k1,1 -k2,2n > "${basename}_filtgm5_merged25_filtg20_with_center.bed"
+
+wc -l "${basename}_filtgm5_merged25_filtg20_with_center.bed"
+# 208069 --> n clusters
+
+##sanity check same as previous versions without center (ie used for counting)?
+for strand in plus minus
+do
+  paste "${basename}_filtgm5_merged25_filtg20_with_center_${strand}.bed" "${basename}_filtgm5_merged25_filtg20_${strand}.bedgraph" | awk '($1 != $7) && ($2 != $8) && ($3 != $8)'
+done
+
+awk '{len+=($3-$2)}END{print len}' "${basename}_filtgm5_merged25_filtg20_with_center.bed"
+# 4048286 --> 4MB in clusters (both strands ie < 0.1% of genome)
+
+
+awk '{print($3-$2)}' "${basename}_filtgm5_merged25_filtg20_with_center.bed" | \
+sort -k1,1n | uniq -c | head -30 ## -> n clusters of given width --> some are small but singletons are the exceptions, huge spread
+# 24223 1
+# 15614 2
+# 20244 3
+# 11816 4
+#  9268 5
+#  7905 6
+#  8055 7
+#  7421 8
+#  7074 9
+#  6282 10
+#  5443 11
+#  5040 12
+#  4488 13
+#  3722 14
+#  3432 15
+# 3231 16
+# 2945 17
+# 2751 18
+# 2729 19
+# 2446 20
+# 2446 21
+# 2341 22
+# 2388 23
+# 2295 24
+# 2265 25
+# 2172 26
+# 2174 27
+# 1866 28
+# 1716 29
+# 1590 30
+
+awk '{print($3-$2)}' "${basename}_filtgm5_merged25_filtg20_with_center.bed" | \
+sort -k1,1n | uniq -c | tail ##largest clusters are a few kb, but these are single examples
+# 1 1848
+# 1 1860
+# 1 2058
+# 1 2094
+# 1 2143
+# 1 2175
+# 1 2176
+# 1 2475
+# 1 2516
+# 1 2678
+
+
+5. Merge adjacent Z8 cases
+#-> got cluster categories with classification from DESeq2
+bed="/home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov/Singles_clusters/RRP40Z1Z8clusters_lastexonssf_with_cat_and_geneanno.bed"
+
+awk '{OFS="\t"}{
+  split($4,ar,":")
+  if(ar[1]=="both"){
+    color="255,0,0"
+  }else if(ar[1]=="Z1"){
+    color="0,255,0"
+  }else if(ar[1]=="Z8"){
+    color="0,0,255"
+  }
+  print $0"\t"$2"\t"$3"\t"color
+}' $bed > ${bed/.bed/_colored.bed}
+
+bedtools slop -b 2000 -g $chrs -i $bed | \
+awk '$4 ~ /^Z8/'| \
+bedtools merge -s -c 4,5,6 -o collapse,first,first | \
+awk '{OFS="\t"}{
+  n=split($5,ar,",")
+  name="Z8:"
+  for(i=1;i<n;i++){
+    split(ar[i],aar,":")
+    if(aar[3] == "protein_coding"){pc=1}
+    name=name""aar[2]","
+  }
+  split(ar[i],aar,":")
+  if(aar[3] == "protein_coding"){pc=1}
+  name=name""aar[2]
+  if(pc == 1){name=name":protein_coding"}
+  pc=0
+  chrn=$1;
+  sub("chr","",chrn);
+  if(chrn=="X"){chrn=23};
+  if(chrn=="Y"){chrn=24};
+  print chrn"\t"$1"\t"$2"\t"$3"\t"name"\t"$6"\t"$7
+}' | sort -k1,1n -k3,3n | cut -f 2-7 > ${bed/.bed/_Z8_pm2000merged.bed}
+
+awk '$4 ~ /^Z8/' $bed | wc -l
+#20182
+
+awk '{if($4 ~ /^Z8/){len += ($3-$2)}}END{print len}' $bed
+#979261 --> total bp in Z8 clusters
+
+wc -l ${bed/.bed/_Z8_pm2000merged.bed}
+#12710 /home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov/Singles_clusters/RRP40Z1Z8clusters_lastexonssf_with_cat_and_geneanno_Z8_pm1000merged.bed
+
+awk '{if($4 ~ /^Z8/){len += ($3-$2)}}END{print len}' ${bed/.bed/_Z8_pm2000merged.bed}
+#56207349 --> total bp in Z8 clusters after merging --> about 55x more !!
+
+
+awk '!($4 ~ /protein/)' ${bed/.bed/_Z8_pm2000merged.bed} | wc -l
+#4150
+
+
+#### add center of mass of new larger intervals
+strand="plus"
+awk '$6=="+"' ${bed/.bed/_Z8_pm2000merged.bed} | \
+bedtools intersect -sorted -loj -a - -b "${basename}_${strand}.bedgraph" | \
+awk -v maxv=0 '{OFS="\t"}{
+  if(cluster==$4){
+    if($10 > maxv){
+      maxv=$10
+      pos=$8
+    }
+  }else{
+    if(maxv > 0){
+      print chr"\t"start"\t"end"\t"cluster":"pos"\t"score"\t+"
+    }
+    chr=$1
+    start=$2
+    end=$3
+    score=0
+    i+=1
+    cluster=$4
+    maxv=$10
+    pos=$8
+  }
+}END{
+  print chr"\t"start"\t"end"\t"cluster":"pos"\t"score"\t+"
+}' > ${bed/.bed/_Z8_pm2000merged_with_center_plus.bed}
+
+strand="minus"
+cat ${bed/.bed/_Z8_pm2000merged.bed} | \
+bedtools intersect -sorted -loj -a - -b "${basename}_${strand}.bedgraph" | \
+awk '$6=="-"' |
+awk -v maxv=0 '{OFS="\t"}{
+  if(cluster==$4){
+    if($10>=maxv){
+      maxv=$10
+      pos=$8
+    }
+  }else{
+    if(maxv > 0){
+      print chr"\t"start"\t"end"\t"cluster":"pos"\t"score"\t-"
+    }
+    chr=$1
+    start=$2
+    end=$3
+    score=0
+    cluster=$4
+    maxv=$10
+    pos=$8
+  }
+}END{
+  print chr"\t"start"\t"end"\t"cluster":"pos"\t"score"\t+"
+}' > ${bed/.bed/_Z8_pm2000merged_with_center_minus.bed}
+
+cat ${bed/.bed/_Z8_pm2000merged_with_center_plus.bed} ${bed/.bed/_Z8_pm2000merged_with_center_minus.bed} | awk '!($4 ~ /protein/)' | wc -l
+#4150
+
+cat ${bed/.bed/_Z8_pm2000merged_with_center_plus.bed} ${bed/.bed/_Z8_pm2000merged_with_center_minus.bed} | sort -k1,1 -k2,2n > ${bed/.bed/_Z8_pm2000merged_with_center.bed}
+
+```
+
+
+## count 3p ends for all libraries within clusters
+
+we count from non-normalized data to have the option to apply alternative scalings if needed...
+```{bash, eval=F}
+#!/bin/sh
+#
+#call: sbatch --mem=4g count_clusters_RRP40Z8Z1.sh
+
+#mkdir /home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov/Singles_clusters/counts
+source /com/extra/ucsc/2015-04-21/load.sh
+
+bed_plus="/home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov/Singles_clusters/Singles_union_filtgm5_merged25_filtg20_with_center_plus.bed"
+bed_minus="/home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov/Singles_clusters/Singles_union_filtgm5_merged25_filtg20_with_center_minus.bed"
+
+for month in July Sept Nov
+do
+  echo ${month}
+  for bw_plus in /home/schmidm/faststorage/Guifen/Lexogen_${month}2018/STAR_map_withERCC/bigwig/*plus.bw
+  do
+    echo "  "$bw_plus
+    name=$(echo ${bw_plus/*\//} | sed s/_plus.bw//g)
+
+    bigWigAverageOverBed $bw_plus $bed_plus /home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov/Singles_clusters/counts/${month}_${name}_plus.counts
+
+    bw_minus=${bw_plus/_plus.bw/_minus.bw}
+    bigWigAverageOverBed $bw_minus $bed_minus /home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov/Singles_clusters/counts/${month}_${name}_minus.counts
+
+    cat /home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov/Singles_clusters/counts/${month}_${name}_plus.counts /home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov/Singles_clusters/counts/${month}_${name}_minus.counts > /home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov/Singles_clusters/counts/${month}_${name}.counts
+
+    rm /home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov/Singles_clusters/counts/${month}_${name}_plus.counts
+    rm /home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov/Singles_clusters/counts/${month}_${name}_minus.counts
+  done
+
+done
+
+
+echo "ALL DONE"
+```
+
+
+## load raw counts to R
+
+ie select only counts from libraries presented in paper
+
+```{r}
+datadir <- '/Volumes/GenomeDK/faststorage/Guifen/Lexogen_July_Sept_Nov/Singles_clusters/counts/'
+
+(flist <- dir(datadir) %>% 
+  keep(grepl('.counts', .) & !grepl('40si', .) & !grepl('siRBM7', .) &
+         !(grepl('_ip', .) & grepl('Sept', .)) &
+         !(grepl('_ip', .) & grepl('siZFC3H1', .) & grepl('July', .))))
+```
+
+```{r}
+(data <- lapply(flist, function(fname) read_tsv(paste0(datadir, fname), col_names = c('cluster', 'size', 'covered', 'sum', 'mean', 'mean0')) %>%
+  dplyr::select(cluster, sum) %>%
+  mutate(fname = sub('.counts', '', fname))) %>%
+  bind_rows)
+```
+
+
+## DESeq2 for clusters
+
+#### spread into count matrix
+
+```{r}
+count_mat <- data %>%
+  tidyr::spread(fname, sum) %>%
+  data.frame %>%
+  column_to_rownames('cluster') %>%
+  as.matrix
+```
+
+```{r}
+glimpse(count_mat)
+```
+
+
+#### save count matrix for later used
+```{r}
+save(count_mat, file='../data/count_mat_RRP40Z1Z8clusters.RData')
+```
+
+#### Alt start point load count
+```{r, eval=TRUE}
+load('../data/count_mat_RRP40Z1Z8clusters.RData', verbose=TRUE)
+```
+
+
+#### load and adjust size factor naming
+
+```{r}
+(sfs <- read_tsv('../data/last_exon_sizeFactors.table'))
+```
+
+
+need to apply exact same naming for size factors and colnames(count_mat):
+
+```{r}
+colnames(count_mat)
+```
+
+```{r}
+size_factors <- sfs$geom_mean_sf
+
+names(size_factors) <- paste0(sfs$series, '_', sfs$lib_name)
+```
+
+do all colnames now have a fitting size factor
+```{r}
+colnames(count_mat)[!(colnames(count_mat) %in% names(size_factors))]
+```
+-> yes.
+
+apply same order
+```{r}
+size_factors <- size_factors[colnames(count_mat)]
+```
+
+```{r}
+names(size_factors) == colnames(count_mat)
+```
+
+```{r}
+size_factors
+```
+
+
+
+
+#### make coldata for all libraries
+
+```{r}
+coldata <- data.frame(library = colnames(count_mat)) %>%
+    tidyr::separate(library, c('series', 'siRNA', 'PAP', 'fraction', 'replicate'), sep='_') %>%
+  mutate(replicate = ifelse(is.na(replicate), 'rep1', replicate),
+         condition = paste(siRNA, PAP, fraction, sep='_'))
+
+rownames(coldata) <- colnames(count_mat)
+
+coldata
+```
+
+
+#### for sinlge KD only
+
+
+```{r}
+count_mat_singles <- count_mat[,!grepl('ZCCHC8.ZFC3H1', colnames(count_mat))]
+
+coldata_singles <- coldata[coldata$siRNA != 'siZCCHC8.ZFC3H1',]
+
+size_factors_singles <- size_factors[!grepl('ZCCHC8.ZFC3H1', names(size_factors))]
+```
+
+
+
+## DESeq2 helper functions
+
+```{r}
+DESeq_for_set <- function(count_mat, coldata, design_formula, size_factors, series=NULL, siRNAs=NULL, PAP=NULL, fraction=NULL) {
+  coldata_sel <- coldata
+
+  if(!is.null(series)){
+    series_sel <- series
+    coldata_sel <- coldata_sel[coldata_sel$series %in% series_sel, ]
+  }
+  if(!is.null(siRNAs)){
+    siRNA_sel <- siRNAs
+    coldata_sel <- coldata_sel[coldata_sel$siRNA %in% siRNA_sel, ]
+  }
+  if(!is.null(PAP)){
+    PAP_sel <- PAP
+    coldata_sel <- coldata_sel[coldata_sel$PAP %in% PAP_sel, ]
+  }
+  if(!is.null(fraction)){
+    fraction_sel <- fraction
+    coldata_sel <- coldata_sel[coldata_sel$fraction %in% fraction_sel, ]
+  }
+  
+  print(paste0('libraries used: ', rownames(coldata_sel)))
+  mat <- count_mat[,rownames(coldata_sel)]
+  mat <- mat[rowSums(mat)>0,]
+  ds <- DESeqDataSetFromMatrix(mat, 
+                             colData = coldata_sel,
+                             design = design_formula)
+  
+  sizeFactors(ds) <- size_factors[rownames(coldata_sel)]
+  ds <- DESeq2::estimateDispersions(ds)
+  ds <- DESeq2::nbinomWaldTest(ds)
+  
+  ds
+}
+```
+
+
+
+```{r}
+contrasts = list(c('siRNA', 'siRRP40', 'siGFP'),
+                 c('siRNA', 'siZCCHC8', 'siGFP'),
+                 c('siRNA', 'siZFC3H1', 'siGFP'),
+                 c('siRNA', 'siZCCHC8.ZFC3H1', 'siGFP'))
+```
+
+```{r}
+get_DESeq2_results <- function(dds, contrasts) {
+  lapply(contrasts, function(contr) results(dds, 
+                                                  contrast = contr,
+                                                  tidy=TRUE) %>% 
+                 tbl_df %>%
+                 mutate(comparison = paste0(contr[2], '_rel_', contr[3]))) %>%
+   bind_rows %>%
+    mutate(sig = case_when(.$padj < .1 & .$log2FoldChange < 0 ~ 'sig_down',
+                           .$padj < .1 & .$log2FoldChange > 0 ~ 'sig_up',
+                           .$padj >= .1 | is.na(.$padj) ~ 'not_sig'))
+}
+```
+
+
+```{r}
+vst_PCA_plot <- function(ds, title, ntop=500, color_by='siRNA', shape_by='series'){
+  
+  vst <- vst(assay(ds))
+
+  rv <- rowVars(vst)
+  select <- order(rv,decreasing = T)[1:ntop]
+  # perform a PCA on the data in assay(x) for the selected genes
+  pca <- prcomp(t(vst[select,]))
+
+  # the contribution to the total variance for each component
+  percentVar <- pca$sdev^2 / sum( pca$sdev^2 )
+
+
+  # assembly the data for the plot
+  pca_df <- pca$x %>%
+    data.frame %>%
+    rownames_to_column(var='library') %>%
+    left_join(data.frame(colData(ds)) %>% rownames_to_column(var='library'), .) %>%
+    mutate(lib_type = paste0(fraction, '_', PAP),
+           series = ifelse(series != 'Nov', as.character(series), paste0(series,' ',sub('.*_', '', library))))
+  
+  pca_df %>%
+  ggplot(., aes_string(x='PC1', y='PC2',
+                       color=color_by, shape=shape_by)) +
+  geom_point(size=3) +
+  ggtitle(title) +
+  xlab(paste0('PC1 (', 100*round(percentVar[1],2), '%)')) +
+  ylab(paste0('PC2 (', 100*round(percentVar[2],2), '%)')) +
+  theme_bw() +
+  scale_color_brewer(palette = 'Set1') +
+  theme(panel.grid = element_blank(),
+        title = element_text(size=8),
+        strip.background = element_blank(),
+        strip.text = element_text(size=8),
+        axis.title = element_text(size=8),
+        axis.text.x = element_text(angle=45, hjust=1, size=6, color='black'),
+        axis.text.y = element_text(size=6, color='black'),
+        legend.title = element_text(size=8),
+        legend.text = element_text(size=8, color='black'),
+        legend.spacing.y = unit(.12, 'inches'),
+        legend.key.height = unit(.01, 'inches'))
+}
+```
+
+
+
+## DESeq2 all at once
+
+```{r, eval=TRUE}
+ds_all <- DESeqDataSetFromMatrix(count_mat, coldata, ~siRNA + series + fraction + PAP)
+
+sizeFactors(ds_all) <- size_factors
+```
+
+
+```{r}
+norm_cnts <- counts(ds_all,normalized=T)
+save(norm_cnts, file='../data/norm_count_mat_RRP40Z1Z8clusters.RData')
+```
+
+
+```{r vst PCA all, fig.width=4, fig.height=2.5}
+vst_PCA_plot(ds_all, 'all', ntop=20000, color_by='lib_type', shape_by='siRNA')
+```
+
+
+```{r vst PCA all singles, fig.width=3.5, fig.height=2.5}
+ds_all_singles <- DESeqDataSetFromMatrix(count_mat_singles, coldata_singles, ~siRNA + series + fraction + PAP)
+
+sizeFactors(ds_all_singles) <- size_factors_singles
+
+vst_PCA_plot(ds_all_singles, 'all singles', ntop=20000, color_by='lib_type', shape_by='siRNA')
+```
+
+
+## DESeq2 input noPAP
+
+```{r}
+ds_in_pAplus <- DESeq_for_set(count_mat, coldata, formula(~siRNA + series), size_factors, fraction='in', PAP='noPAP')
+```
+
+```{r, eval=TRUE}
+save(ds_in_pAplus, file='../data/ds_in_pAplus_RRP40Z1Z8clusters_lastexonsf.RData')
+```
+
+
+```{r dispersion estimates cluster counts pAplus inputs}
+DESeq2::plotDispEsts(ds_in_pAplus)
+```
+
+```{r vst PCA pAplus inputs, fig.width=4, fig.height=2.5}
+vst_PCA_plot(ds_in_pAplus, 'noPAP in', ntop=500, shape_by='series')
+```
+
+
+```{r}
+ds_in_pAplus_singles <- DESeq_for_set(count_mat_singles, coldata_singles, formula(~siRNA + series), size_factors_singles, fraction='in', PAP='noPAP')
+```
+
+```{r, eval=TRUE}
+save(ds_in_pAplus_singles, file='../data/ds_in_pAplus_singles_RRP40Z1Z8clusters_lastexonsf.RData')
+```
+
+
+```{r vst PCA pAplus in singles, fig.width=3.5, fig.height=2.5}
+vst_PCA_plot(ds_in_pAplus_singles, 'noPAP in singles', ntop=500, shape_by='series')
+```
+
+```{r}
+(res_ds_in_pAplus <- get_DESeq2_results(ds_in_pAplus, contrasts))
+```
+
+```{r}
+res_ds_in_pAplus %>%
+  group_by(comparison, sig) %>%
+  summarize(cnt = n())
+```
+
+```{r}
+save(res_ds_in_pAplus, file='../data/res_ds_in_pAplus_RRP40Z1Z8clusters_lastexonsf.RData')
+```
+
+
+
+## DESeq2 input xPAP
+
+```{r}
+ds_in_pAplusminus <- DESeq_for_set(count_mat, coldata, formula(~siRNA + series), size_factors, fraction='in', PAP='xPAP')
+```
+
+```{r}
+save(ds_in_pAplusminus, file='../data/ds_in_pAplusminus_RRP40Z1Z8clusters_lastexonsf.RData')
+```
+
+```{r dispersion estimates cluster counts pAplusminus inputs}
+DESeq2::plotDispEsts(ds_in_pAplusminus)
+```
+
+```{r vst PCA pAplusminus inputs, fig.width=4, fig.height=2.5}
+
+vst_PCA_plot(ds_in_pAplusminus, 'xPAP in', ntop=500, shape_by='series')
+```
+
+```{r vst PCA pAplusminus in singles, fig.width=3.5, fig.height=2.5}
+ds_in_pAplusminus_singles <- DESeq_for_set(count_mat_singles, coldata_singles, formula(~siRNA + series), size_factors_singles, fraction='in', PAP='xPAP')
+
+vst_PCA_plot(ds_in_pAplusminus_singles, 'xPAP in singles', ntop=500, shape_by='series')
+```
+
+```{r}
+save(ds_in_pAplusminus_singles, file='../data/ds_in_pAplusminus_singles_RRP40Z1Z8clusters_lastexonsf.RData')
+```
+
+```{r}
+(res_ds_in_pAplusminus <- get_DESeq2_results(ds_in_pAplusminus, contrasts))
+```
+
+```{r}
+res_ds_in_pAplusminus %>%
+  group_by(comparison, sig) %>%
+  summarize(cnt = n())
+```
+
+```{r}
+save(res_ds_in_pAplusminus, file='../data/res_ds_in_pAplusminus_RRP40Z1Z8clusters_lastexonsf.RData')
+```
+
+
+
+## DESeq2 ip noPAP
+
+
+```{r}
+ds_ip_pAplus <- DESeq_for_set(count_mat, coldata, formula(~siRNA + series), size_factors, fraction='ip', PAP='noPAP')
+```
+
+```{r}
+save(ds_ip_pAplus, file='../data/ds_ip_pAplus_RRP40Z1Z8clusters_lastexonsf.RData')
+```
+
+```{r dispersion estimates cluster counts pAplus ips only good ones}
+DESeq2::plotDispEsts(ds_ip_pAplus)
+```
+
+
+```{r vst PCA pAplus ips, fig.width=4, fig.height=2.5}
+vst_PCA_plot(ds_ip_pAplus, 'noPAP ip', ntop=500, shape_by='series')
+```
+
+```{r vst PCA pAplus ip singles, fig.width=3.5, fig.height=2.5}
+ds_ip_pAplus_singles <- DESeq_for_set(count_mat_singles, coldata_singles, formula(~siRNA + series), size_factors_singles, fraction='ip', PAP='noPAP')
+
+vst_PCA_plot(ds_ip_pAplus_singles, 'noPAP ip singles', ntop=500, shape_by='series')
+```
+
+```{r}
+save(ds_ip_pAplus_singles, file='../data/ds_ip_pAplus_singles_RRP40Z1Z8clusters_lastexonsf.RData')
+```
+
+```{r}
+(res_ds_ip_pAplus <- get_DESeq2_results(ds_ip_pAplus, contrasts))
+```
+
+```{r}
+res_ds_ip_pAplus %>%
+  group_by(comparison, sig) %>%
+  summarize(cnt = n())
+```
+
+```{r}
+save(res_ds_ip_pAplus, file='../data/res_ds_ip_pAplus_RRP40Z1Z8clusters_lastexonsf.RData')
+```
+
+
+
+## DESeq2 ip xPAP
+
+```{r}
+ds_ip_pAplusminus <- DESeq_for_set(count_mat, coldata, formula(~siRNA + series), size_factors, fraction='ip', PAP='xPAP')
+```
+
+```{r}
+save(ds_ip_pAplusminus, file='../data/ds_ip_pAplusminus_RRP40Z1Z8clusters_lastexonsf.RData')
+```
+
+```{r dispersion estimates cluster counts pAplusminus ips only good ones}
+DESeq2::plotDispEsts(ds_ip_pAplusminus)
+```
+
+```{r vst PCA pAplusminus ips, fig.width=4, fig.height=2.5}
+
+vst_PCA_plot(ds_ip_pAplusminus, 'xPAP ip', ntop=500, shape_by='series')
+```
+
+```{r vst PCA pAplusminus up singles, fig.width=3.5, fig.height=2.5}
+ds_ip_pAplusminus_singles <- DESeq_for_set(count_mat_singles, coldata_singles, formula(~siRNA + series), size_factors_singles, fraction='ip', PAP='xPAP')
+
+vst_PCA_plot(ds_ip_pAplusminus_singles, 'xPAP ip singles', ntop=500, shape_by='series')
+```
+
+```{r}
+save(ds_ip_pAplusminus_singles, file='../data/ds_ip_pAplusminus_singles_RRP40Z1Z8clusters_lastexonsf.RData')
+```
+
+
+```{r}
+(res_ds_ip_pAplusminus <- get_DESeq2_results(ds_ip_pAplusminus, contrasts))
+```
+
+```{r}
+res_ds_ip_pAplusminus %>%
+  group_by(comparison, sig) %>%
+  summarize(cnt = n())
+```
+
+```{r}
+save(res_ds_ip_pAplusminus, file='../data/res_ds_ip_pAplusminus_RRP40Z1Z8clusters_lastexonsf.RData')
+```
+
+
+## combine resuls and categorize
+
+```{r}
+(res_df <- bind_rows(mutate(res_ds_in_pAplus, libtype='noPAP input'),
+                    mutate(res_ds_ip_pAplus, libtype='noPAP ip'),
+                    mutate(res_ds_in_pAplusminus, libtype='xPAP input'),
+                    mutate(res_ds_ip_pAplusminus, libtype='xPAP ip')) %>%
+   mutate(libtype=factor(libtype, levels=c('noPAP input', 'noPAP ip', 'xPAP input', 'xPAP ip'))))
+```
+
+```{r}
+save(res_df, file='../data/res_ds_combined_RRP40Z1Z8clusters_lastexonsf.RData')
+```
+
+
+
+## sessionInfo
+
+```{r}
+sessionInfo()
+```
+
