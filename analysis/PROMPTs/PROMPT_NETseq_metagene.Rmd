@@ -1,0 +1,204 @@
+---
+title: 'Metagene around MS Gencode PROMPT 3p end'
+author: "Manfred Schmid"
+output: 
+  pdf_document:
+    toc: true 
+    toc_depth: 3
+    fig_caption: true
+---
+
+`r format(Sys.time(), "%d %B, %Y; %R")`
+
+## Setup
+
+```{r setup, echo=TRUE}
+knitr::opts_chunk$set(fig.width=12, fig.height=8, 
+                      fig.path=paste0('../../Figures/MS_Gencode_PROMPT_mNETseq_metagene_withsizefactors/'), 
+                      dev='pdf', 
+                      echo=TRUE, warning=FALSE, message=FALSE, 
+                      error=TRUE)
+```
+
+```{r load packages, echo=T, warning=F, message=F}
+suppressWarnings(library('tidyverse'))
+suppressWarnings(library('magrittr'))
+suppressWarnings(library('knitr'))
+suppressWarnings(library('RMetaTools'))
+```
+
+
+```{r}
+lineplot_style <- list(
+  scale_color_manual(values=c('#1f77b4', '#ff7f0e', '#2ca02c', 'navyblue', 'red'), na.value='lightgray'),
+  scale_fill_manual(values=c('#1f77b4', '#ff7f0e', '#2ca02c', 'navyblue', 'red'), na.value='lightgray'),
+  theme_bw(),
+  theme(axis.text.x = element_text(angle=45, hjust=1),
+        panel.grid = element_blank(),
+        panel.background = element_blank(),
+        panel.border = element_blank(),
+        axis.line = element_line()))
+```
+
+#### deeptools run
+
+```{bash, eval=F}
+#!/bin/sh
+##run interactively
+#cd /home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov/scripts/deeptools/MS_Gencode_PROMPTs
+#sbatch --account=thj_common --mem=2g deeptools_allPROMPTs_ProudfootNETseq_x_MSGencodePROMPT_TSSm1p5kb.sh
+
+. /home/schmidm/miniconda2/etc/profile.d/conda.sh
+conda activate deeptools3
+
+cd /home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov/scripts/deeptools/MS_Gencode_PROMPTs
+
+anno="/home/schmidm/annotations/hg38/Gencode_v28/PROMPT_TSS_to5kb_TSS_toMaxIn5kb_withend.bed"
+#awk '$6 == "+"' $anno > ${anno/.bed/_plus.bed}
+#awk '$6 == "-"' $anno > ${anno/.bed/_minus.bed}
+
+outdir="/home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov/scripts/deeptools/MS_Gencode_PROMPTs/deeptools_out/all_NETseq_deeptools_out"
+mkdir $outdir
+
+bw_plus=$(readlink -f /project/THJ_common/faststorage/data/Human/GEO/GSE81662/hg38_bigwigs/bigwig_with_titles/Total_mNETseq*F.bw | sed s/bigwig_with_titles\\///g | tr "\n" " ")
+
+bw_minus=${bw_plus//_F.bw/_R.bw}
+
+python /home/schmidm/ms_tools/MS_Metagene_Tools/computeMatrixStranded.pyc \
+reference-point \
+-Rp ${anno/.bed/_plus.bed} -Rm ${anno/.bed/_minus.bed} \
+-Sp $bw_plus -Sm $bw_minus \
+-o $outdir/Total_mNETseq_TSSm1p5kb.gz \
+-a 5000 -b 1000 --referencePoint=TSS --binSize=50 --missingDataAsZero --averageTypeBins sum --quiet
+
+```
+
+
+## load and R 
+
+#### load PROMPT classification
+
+```{r}
+(prompt_info <- read_tsv('../../data/PROMPT_sensitivities_Z1_Z8_RRP40_withextraclasses_withsizeFactors.txt') %>%
+   dplyr::distinct(id, class3, class5))
+```
+
+
+#### load sample names
+
+```{r}
+(sample_info <- read_tsv('/Volumes/GenomeDK/THJ_common/faststorage/data/Human/GEO/GSE81662/info/accession_to_samplename.tab', col_names=c('gsm_id', 'sample_name')))
+```
+
+
+#### load metagene matrices
+
+```{r}
+fname <- '/Volumes/GenomeDK/faststorage/Guifen/Lexogen_July_Sept_Nov/scripts/deeptools/MS_Gencode_PROMPTs/deeptools_out/all_NETseq_deeptools_out/Total_mNETseq_TSSm1p5kb.gz'
+
+(df <- RMetaTools::load_deeptoolsmatrix3(fname))
+```
+
+```{r}
+(df %<>%
+  mutate(id = sub('center_of:', '', id),
+         gsm_id = sub('.*GSM', 'GSM', sample_name) %>% sub('_.*', '', .)) %>%
+   dplyr::select(-sample_name, -name) %>%
+   left_join(., prompt_info) %>%
+   left_join(., sample_info) %>%
+   mutate(class3 = factor(class3, levels=c('PAXT', 'NEXT', 'BOTH', 'not sig')),
+          class5 = factor(class5, levels=c('PAXT', 'NEXT', 'BOTH', 'PAXTonly', 'NEXTonly', 'not sig'))))
+```
+
+
+## PROMPT classifications
+
+
+#### 3-class version
+
+```{r}
+(meta_values3 <- df %>%
+  mutate(log2_value = log2(value+1)) %>%
+  group_by(class3, sample_name, rel_pos) %>%
+  do(tidy(t.test(.$log2_value))))
+```
+
+```{r cluster metagene profile normalized values 2classes}
+meta_values3 %>%
+  filter(class3 != 'BOTH', class3 != 'not sig') %>%
+ggplot(. ,aes(x=rel_pos, y=estimate)) +
+  geom_line(aes(color=class3)) +
+  geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class3), alpha=.2)  +
+  facet_wrap(~sample_name, scales='free')  +
+  ylab('Average Log2 Signal') +
+  lineplot_style
+```
+
+```{r cluster metagene profile normalized values 3classes}
+meta_values3 %>%
+  filter(class3 != 'not sig') %>%
+  ggplot(. ,aes(x=rel_pos, y=estimate)) +
+  geom_line(aes(color=class3)) +
+  geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class3), alpha=.2)  +
+  facet_wrap(~sample_name, scales='free')  +
+  ylab('Average Log2 Signal') +
+  lineplot_style
+```
+
+#### 5-class version
+
+```{r}
+(meta_values5 <- df %>%
+  mutate(log2_value = log2(value+1)) %>%
+  group_by(class5, sample_name, rel_pos) %>%
+  do(tidy(t.test(.$log2_value))))
+```
+
+
+```{r cluster metagene profile normalized values 5classes}
+meta_values5 %>%
+  filter(class5 != 'not sig') %>%
+  ggplot(. ,aes(x=rel_pos, y=estimate)) +
+  geom_line(aes(color=class5)) +
+  geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class5), alpha=.2)  +
+  facet_wrap(~sample_name, scales='free')  +
+  ylab('Average Log2 Signal') +
+  lineplot_style
+```
+
+```{r cluster metagene profile normalized values 5classes split up}
+meta_values5 %>%
+  ggplot(. ,aes(x=rel_pos, y=estimate)) +
+  geom_line(aes(color=class5)) +
+  geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class5), alpha=.2)  +
+  facet_grid(.~class5, scales='free')  +
+  ylab('Average Log2 Signal') +
+  lineplot_style
+```
+
+5 classes scaled rel to TSS
+
+```{r}
+tss_val <- df %>% filter(rel_pos == 0) %>% dplyr::select(-rel_pos) %>% dplyr::rename(TSS_val=value)
+```
+
+```{r}
+(meta_values5 <- df %>%
+   left_join(., tss_val) %>%
+  mutate(log2_value = log2((value+1)/(TSS_val+1))) %>%
+  group_by(class3, sample_name, rel_pos) %>%
+  do(tidy(t.test(.$log2_value))))
+```
+```{r cluster metagene profile normalized values 5classes split up scale to TSS}
+ggplot(meta_values5 ,aes(x=rel_pos, y=estimate)) +
+  geom_line(aes(color=class3)) +
+  geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class3), alpha=.2)  +
+  facet_grid(.~sample_name, scales='free')  +
+  ylab('Average Log2 Signal') +
+  lineplot_style
+```
+
+```{r}
+sessionInfo()
+```
+
