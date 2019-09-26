@@ -1,0 +1,560 @@
+---
+title: 'Metagene around MS Gencode PROMPT 3p end'
+author: "Manfred Schmid"
+output: 
+  pdf_document:
+    toc: true 
+    toc_depth: 3
+    fig_caption: true
+---
+
+`r format(Sys.time(), "%d %B, %Y; %R")`
+
+## Setup
+
+```{r setup, echo=TRUE}
+knitr::opts_chunk$set(fig.width=12, fig.height=8, 
+                      fig.path=paste0('../../Figures/MS_Gencode_PROMPT_3endseq_metagene_withsizefactors/'), 
+                      dev='pdf', 
+                      echo=TRUE, warning=FALSE, message=FALSE, 
+                      error=TRUE)
+```
+
+```{r load packages, echo=T, warning=F, message=F}
+suppressWarnings(library('tidyverse'))
+suppressWarnings(library('magrittr'))
+suppressWarnings(library('knitr'))
+suppressWarnings(library('broom'))
+suppressWarnings(library('RMetaTools'))
+```
+
+
+```{r}
+lineplot_style <- list(
+  scale_color_manual(values=c('#1f77b4', '#ff7f0e', '#2ca02c', 'red', 'navyblue'), na.value='lightgray'),
+  scale_fill_manual(values=c('#1f77b4', '#ff7f0e', '#2ca02c', 'red', 'navyblue'), na.value='lightgray'),
+  theme_bw(),
+  theme(axis.text.x = element_text(angle=45, hjust=1),
+        panel.grid = element_blank(),
+        panel.background = element_blank(),
+        panel.border = element_blank(),
+        axis.line = element_line()))
+
+
+areaplot_style <- list(
+  scale_fill_manual(values=c('#2C3E95', '#4EAE48', '#397DB9'), na.value='lightgray'),
+  scale_color_manual(values=c('#2C3E95', '#4EAE48', '#397DB9'), na.value='lightgray'),
+  theme_bw(),
+  theme(axis.text.x = element_text(angle=45, hjust=1),
+        panel.grid = element_blank(),
+        panel.background = element_blank(),
+        panel.border = element_blank(),
+        axis.line = element_line()))
+```
+
+#### deeptools run
+
+```{bash, eval=FALSE}
+#!/bin/sh
+##cd /home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov/scripts/deeptools/MS_Gencode_PROMPTs/
+##sbatch --account=thj_common --mem=2g deeptools_allGuifen_TESm1p1kb_offcenter.sh
+
+. /home/schmidm/miniconda2/etc/profile.d/conda.sh
+conda activate deeptools3
+cd /home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov/scripts/deeptools/MS_Gencode_PROMPTs
+
+anno="/home/schmidm/annotations/hg38/Gencode_v28/PROMPT_TSS_to5kb_TSS_toMaxIn5kb_withend.bed"
+#awk '{OFS="\t"}{if($6 == "+"){$2=($3-1025);$3+=1025;print $0}}' $anno > ${anno/.bed/_TESpm1025_plus.bed}
+#awk '{OFS="\t"}{if($6 == "-"){$3=($2+1025);$2-=1025;print $0}}' $anno > ${anno/.bed/_TESpm1025_minus.bed}
+
+
+outdir="/home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov/scripts/deeptools/MS_Gencode_PROMPTs/deeptools_out/all_TESm1025p1025_3pseq_all_deeptools_out"
+mkdir $outdir
+sizeFactors="/home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov/last_exon_sizeFactors.table"
+
+cat $sizeFactors | sed 1d | while read line;
+#tail -1 $sizeFactors | while read line;
+#grep siZCCHC8 $sizeFactors | grep ZFC3H1 | while read line;
+do
+  arr=($line)
+  fname=${arr[0]/./+}
+  month=${arr[1]}
+  echo "${month} ${fname}"
+
+  bw_plus="/home/schmidm/faststorage/Guifen/${arr[5]}/bigwig/${fname}_plus.bw"
+  bw_minus=${bw_plus//plus.bw/minus.bw}
+
+  name="raw_${month}_${fname}"
+  mat="${outdir}/${name}.gz"
+
+  echo $mat
+
+  qx python /home/schmidm/ms_tools/MS_Metagene_Tools/computeMatrixStranded.pyc scale-regions -Rp ${anno/.bed/_TESpm1025_plus.bed} -Rm ${anno/.bed/_TESpm1025_minus.bed} -Sp $bw_plus -Sm $bw_minus -o $mat -a 0 -b 0 --binSize=50 --regionBodyLength 2050 --missingDataAsZero --averageTypeBins sum --quiet
+done
+
+echo "ALL DONE"
+
+```
+
+
+## load and R 
+
+#### load PROMPT classification
+
+```{r}
+(prompt_info <- read_tsv('../../data/PROMPT_sensitivities_Z1_Z8_RRP40_withextraclasses_withsizeFactors.txt'))
+```
+
+
+#### load metagene matrices
+
+```{r, eval=FALSE}
+path <- '/Volumes/GenomeDK/faststorage/Guifen/Lexogen_July_Sept_Nov/scripts/deeptools/MS_Gencode_PROMPTs/deeptools_out/all_TESm1025p1025_3pseq_all_deeptools_out/'
+
+(fnames <- dir(path) %>% keep(grepl('^raw.*.gz', .) & !grepl('RBM7', .)))
+```
+
+
+```{r, eval=FALSE}
+(df <- lapply(fnames, function(fname) RMetaTools::load_deeptoolsmatrix3(paste0(path,fname)) %>%
+         mutate(sample_name = sub('.*raw_', '', fname) %>% sub('.gz', '', .))) %>%
+         bind_rows)
+```
+
+```{r, eval=FALSE}
+(df %<>%
+  mutate(id = sub('center_of:', '', id),
+         rel_pos = rel_pos - 1000) %>%
+  left_join(., prompt_info) %>%
+  separate(sample_name, c('series', 'siRNA', 'PAP', 'fraction', 'rep'), sep='_')  %>%
+  mutate(series = ifelse(is.na(rep), series, paste0('Novx', rep))) %>%
+  dplyr::select(class3, class5, id, rel_pos, series, siRNA, PAP, fraction, value))
+```
+
+
+#### load size factors
+
+```{r, eval=FALSE}
+(nfs <- read_tsv('../../data/last_exon_sizeFactors.table'))
+```
+
+```{r, eval=FALSE}
+(nfs %<>%
+  tidyr::separate(lib_name, c('siRNA', 'PAP', 'fraction', 'rep'), sep='_') %>%
+   mutate(series = ifelse(is.na(rep), series, paste0('Novx',rep)),
+          siRNA = sub('\\.', '\\+', siRNA)) %>%
+   dplyr::select(-bg_bam_dir, -lib, -rep))
+```
+
+#### normalize using size factors
+
+```{r, eval=FALSE}
+(df %<>% left_join(., nfs) %>%
+  mutate(value = value/geom_mean_sf,
+         class3 = factor(class3, levels=c('PAXT', 'NEXT', 'BOTH')),
+         class5 = factor(class5, levels=c('PAXT', 'NEXT', 'BOTH', 'NEXTonly', 'PAXTonly', 'not sig')),
+         siRNA = factor(siRNA, levels=c('siGFP', 'siRRP40', 'siZCCHC8', 'siZFC3H1', 'siZCCHC8+ZFC3H1'))))
+```
+
+```{r, eval=FALSE}
+save(df, file = '../../data/MS_Gencode_PROMPTs_3pseq_metagene.RData')
+```
+
+```{r, eval=TRUE}
+load('../../data/MS_Gencode_PROMPTs_3pseq_metagene.RData')
+df
+```
+
+```{r}
+(prompt_info <- read_tsv('../../data/PROMPT_sensitivities_Z1_Z8_RRP40_withextraclasses_withsizeFactors.txt'))
+```
+
+
+```{r}
+df %<>%
+  dplyr::select(-class3, -class5) %>%
+  left_join(., distinct(prompt_info, id, class3, class5)) %>%
+  mutate(class3 = factor(class3, levels=c('PAXT', 'NEXT', 'BOTH')),
+         class5 = factor(class5, levels=c('PAXT', 'NEXT', 'BOTH', 'NEXTonly', 'PAXTonly', 'not sig')))
+```
+
+
+#### prepare for metagene
+
+
+```{r}
+df %<>%
+  mutate(log2_value = log2(value+1))
+
+ctrls <- df %>%
+  filter(siRNA == "siGFP") %>%
+  dplyr::rename(ctrl_log2_value = log2_value) %>%
+  dplyr::select(id, rel_pos, series, PAP, fraction, ctrl_log2_value)
+
+log2FCs <- df %>%
+  filter(siRNA != "siGFP") %>%
+  left_join(., ctrls) %>%
+  mutate(log2FC = log2_value - ctrl_log2_value,
+         siRNA = factor(siRNA, levels=c('siRRP40', 'siZCCHC8', 'siZFC3H1', 'siZCCHC8+ZFC3H1')))
+```
+
+## violin plots
+
+
+```{r}
+per_id <- df %>%
+  group_by(id, class3, series, siRNA, PAP, fraction) %>%
+  summarize(total_signal = sum(value)) %>%
+  group_by(id, class3, siRNA, PAP, fraction) %>%
+  summarize(total_signal = mean(total_signal))
+
+ctrls <- per_id %>%
+  filter(siRNA == "siGFP") %>%
+  dplyr::rename(ctrl_total_signal = total_signal) %>%
+  ungroup %>%
+  dplyr::select(id, PAP, fraction, ctrl_total_signal)
+
+log2FC_per_id <- per_id %>%
+  ungroup %>%
+  filter(siRNA != "siGFP") %>%
+  left_join(., ctrls) %>%
+  mutate(log2FC = log2(total_signal+1) - log2(ctrl_total_signal+1),
+         siRNA = factor(siRNA, levels=c('siRRP40', 'siZCCHC8', 'siZFC3H1', 'siZCCHC8+ZFC3H1')))
+```
+
+
+```{r violins log2FCs TES pm 1kb}
+ggplot(log2FC_per_id, aes(x=siRNA, y=log2FC, fill=siRNA)) +
+  geom_violin() +
+  geom_boxplot(width=.2, fill='lightgray', outlier.shape=NA) +
+  facet_grid(fraction+PAP~class3) +
+  geom_hline(yintercept = 0, linetype=2) +
+  theme_bw() +
+  theme(panel.grid=element_blank())
+```
+
+
+
+## metagene raw values profiles
+
+#### 2-class version
+
+```{r}
+(meta_values3 <- df %>%
+  filter(!is.na(class3)) %>%
+  group_by(class3, siRNA, PAP, fraction, rel_pos) %>%
+  do(tidy(t.test(.$log2_value))))
+```
+
+
+```{r cluster metagene profile normalized values 2classes}
+meta_values3 %>%
+  filter(class3 != 'BOTH', class3 != 'not sig') %>%
+  ggplot(. ,aes(x=rel_pos, y=estimate)) +
+  geom_line(aes(color=class3)) +
+  geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class3), alpha=.2)  +
+  facet_grid(fraction+PAP~siRNA, scales='free')  +
+  ylab('Average Log2 Signal') +
+  lineplot_style
+```
+
+
+```{r}
+(meta_log2FCs3 <- log2FCs %>%
+  group_by(class3, siRNA, PAP, fraction, rel_pos) %>%
+  do(tidy(t.test(.$log2FC))))
+```
+
+
+```{r cluster metagene profile log2FC 2classes}
+meta_log2FCs3 %>%
+  filter(class3 != 'BOTH', class3 != 'not sig') %>%
+  ggplot(. ,aes(x=rel_pos, y=estimate)) +
+  geom_line(aes(color=class3)) +
+  geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class3), alpha=.2)  +
+  facet_grid(fraction+PAP~siRNA, scales='free')  +
+  ylab('Average Log2 Signal') +
+  lineplot_style
+```
+
+
+#### 3-class version
+
+
+```{r cluster metagene profile normalized values 3classes}
+meta_values3 %>%
+  filter(class3 != 'not sig') %>%
+  ggplot(. ,aes(x=rel_pos, y=estimate)) +
+  geom_line(aes(color=class3)) +
+  geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class3), alpha=.2)  +
+  facet_grid(fraction+PAP~siRNA, scales='free')  +
+  ylab('Average Log2 Signal') +
+  lineplot_style
+```
+
+```{r PROMPT metagene profile log2FC 3classes}
+meta_log2FCs3 %>%
+  filter(class3 != 'not sig') %>%
+  ggplot(. ,aes(x=rel_pos, y=estimate)) +
+  geom_line(aes(color=class3)) +
+  geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class3), alpha=.2)  +
+  facet_grid(fraction+PAP~siRNA, scales='free')  +
+  ylab('Average Log2 Signal') +
+  lineplot_style
+```
+
+```{r PROMPT metagene profile log2FC 3classes areas}
+meta_log2FCs3 %>%
+  filter(class3 != 'not sig', siRNA != 'siRRP40') %>%
+  ungroup %>%
+  mutate(siRNA = factor(siRNA, levels=c('siZCCHC8+ZFC3H1', 'siZCCHC8', 'siZFC3H1'))) %>%
+  ggplot(.) +
+  geom_ribbon(aes(x=rel_pos, ymin=0, ymax=estimate, fill=siRNA), alpha=.75) +
+  geom_line(aes(x=rel_pos, y=estimate, color=siRNA)) +
+  #geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class3), alpha=.2)  +
+  facet_grid(fraction+PAP~class3, scales='free')  +
+  ylab('Average Log2 Signal') +
+  areaplot_style
+```
+
+
+
+#### 4-class version
+
+```{r}
+(meta_values4 <- df %>%
+  mutate(log2_value = log2(value+1),
+         class4 = ifelse(as.character(class5) != 'PAXTonly', as.character(class5), 'PAXT')) %>%
+  group_by(class4, siRNA, PAP, fraction, rel_pos) %>%
+  do(tidy(t.test(.$log2_value))) %>%
+   ungroup %>%
+   mutate(class4 = factor(class4, levels=c('PAXT', 'BOTH', 'NEXT', 'NEXTonly', 'not sig'))))
+```
+
+
+```{r cluster metagene profile normalized values 4classes}
+meta_values4 %>%
+  filter(class4 != 'not sig') %>%
+  ggplot(. ,aes(x=rel_pos, y=estimate)) +
+  geom_line(aes(color=class4)) +
+  geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class4), alpha=.2)  +
+  facet_grid(fraction+PAP~siRNA, scales='free')  +
+  ylab('Average Log2 Signal') +
+  lineplot_style
+```
+
+
+```{r}
+(meta_log2FCs4 <- log2FCs %>%
+  mutate(class4 = ifelse(as.character(class5) != 'PAXTonly', as.character(class5), 'PAXT')) %>%
+  group_by(class4, siRNA, PAP, fraction, rel_pos) %>%
+  do(tidy(t.test(.$log2FC))) %>%
+   ungroup %>%
+   mutate(class4 = factor(class4, levels=c('PAXT', 'BOTH', 'NEXT', 'NEXTonly', 'not sig'))))
+```
+
+
+```{r cluster metagene profile log2FC 4classes}
+meta_log2FCs4 %>%
+  filter(class4 != 'not sig') %>%
+  ggplot(. ,aes(x=rel_pos, y=estimate)) +
+  geom_line(aes(color=class4)) +
+  geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class4), alpha=.2)  +
+  facet_grid(fraction+PAP~siRNA, scales='free')  +
+  ylab('Average Log2 Signal') +
+  lineplot_style
+```
+
+
+```{r PROMPT metagene profile log2FC 4classes areas}
+meta_log2FCs4 %>%
+  filter(class4 != 'not sig', siRNA != 'siRRP40') %>%
+  ungroup %>%
+  mutate(siRNA = factor(siRNA, levels=c('siZCCHC8+ZFC3H1', 'siZCCHC8', 'siZFC3H1'))) %>%
+  ggplot(.) +
+  geom_ribbon(aes(x=rel_pos, ymin=0, ymax=estimate, fill=siRNA), alpha=.75) +
+  geom_line(aes(x=rel_pos, y=estimate, color=siRNA)) +
+  #geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class3), alpha=.2)  +
+  facet_grid(fraction+PAP~class4, scales='free')  +
+  ylab('Average Log2 Signal') +
+  areaplot_style
+```
+
+
+
+
+#### 5-class version
+
+```{r}
+(meta_values5 <- df %>%
+  mutate(log2_value = log2(value+1)) %>%
+  group_by(class5, siRNA, PAP, fraction, rel_pos) %>%
+  do(tidy(t.test(.$log2_value))))
+```
+
+
+```{r cluster metagene profile normalized values 5classes}
+meta_values5 %>%
+  filter(class5 != 'not sig') %>%
+  ggplot(. ,aes(x=rel_pos, y=estimate)) +
+  geom_line(aes(color=class5)) +
+  geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class5), alpha=.2)  +
+  facet_grid(fraction+PAP~siRNA, scales='free')  +
+  ylab('Average Log2 Signal') +
+  lineplot_style
+```
+
+
+```{r}
+(meta_log2FCs5 <- log2FCs %>%
+  group_by(class5, siRNA, PAP, fraction, rel_pos) %>%
+  do(tidy(t.test(.$log2FC))))
+```
+
+
+```{r cluster metagene profile log2FC 5classes}
+meta_log2FCs5 %>%
+  filter(class5 != 'not sig') %>%
+  ggplot(. ,aes(x=rel_pos, y=estimate)) +
+  geom_line(aes(color=class5)) +
+  geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class5), alpha=.2)  +
+  facet_grid(fraction+PAP~siRNA, scales='free')  +
+  ylab('Average Log2 Signal') +
+  lineplot_style
+```
+
+
+```{r PROMPT metagene profile log2FC 5classes areas}
+meta_log2FCs5 %>%
+  filter(class5 != 'not sig', siRNA != 'siRRP40') %>%
+  ungroup %>%
+  mutate(siRNA = factor(siRNA, levels=c('siZCCHC8+ZFC3H1', 'siZCCHC8', 'siZFC3H1'))) %>%
+  ggplot(.) +
+  geom_ribbon(aes(x=rel_pos, ymin=0, ymax=estimate, fill=siRNA), alpha=.75) +
+  geom_line(aes(x=rel_pos, y=estimate, color=siRNA)) +
+  #geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class3), alpha=.2)  +
+  facet_grid(fraction+PAP~class5, scales='free')  +
+  ylab('Average Log2 Signal') +
+  areaplot_style
+```
+
+
+
+## with vs without hexamer at TES
+
+
+```{r}
+(hexamer_info <- rtracklayer::import('../../data/MS_Gencode_PROMPTs_with_class3_class5_hexameratTES.bed') %>%
+  data.frame %>%
+  tbl_df %>%
+  tidyr::separate(name, c('id', 'class3', 'class5', 'hexamer'), sep=':') %>%
+  dplyr::select(id, hexamer))
+```
+
+
+```{r }
+(meta_log2FCs3 <- log2FCs %>%
+   left_join(., hexamer_info) %>%
+  group_by(class3, hexamer, siRNA, PAP, fraction, rel_pos) %>%
+  do(tidy(t.test(.$log2FC))))
+
+
+```
+
+```{r cluster metagene profile log2FC 2classes split by hexamer}
+meta_log2FCs3 %>%
+  filter(class3 != 'not sig', class3 != 'BOTH') %>%
+  ggplot(. ,aes(x=rel_pos, y=estimate)) +
+  geom_line(aes(color=class3, linetype=hexamer)) +
+  #geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class3, alpha=hexamer), alpha=.2)  +
+  facet_grid(fraction+PAP~class3+siRNA, scales='free')  +
+  ylab('Average Log2 Signal') +
+  lineplot_style
+```
+
+
+```{r cluster metagene profile log2FC 5classes split by hexamer}
+(meta_log2FCs5 <- log2FCs %>%
+   left_join(., hexamer_info) %>%
+  group_by(class5, hexamer, siRNA, PAP, fraction, rel_pos) %>%
+  do(tidy(t.test(.$log2FC))))
+
+meta_log2FCs5 %>%
+  filter(class5 != 'not sig') %>%
+  ggplot(. ,aes(x=rel_pos, y=estimate)) +
+  geom_line(aes(color=class5)) +
+  geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class5), alpha=.2)  +
+  facet_grid(fraction+PAP~siRNA+hexamer, scales='free')  +
+  ylab('Average Log2 Signal') +
+  lineplot_style
+```
+
+
+
+#### significance of +/- hexamer
+
+which position to interrogate
+```{r cluster metagene profile log2FC 2classes split by hexamer center zoom}
+meta_log2FCs3 %>%
+  filter(class3 == 'PAXT' | class3 == 'NEXT',
+         rel_pos >= -100 & rel_pos <= 100) %>%
+  ggplot(. ,aes(x=rel_pos, y=estimate)) +
+  geom_line(aes(color=class3, linetype=hexamer)) +
+  #geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class3, alpha=hexamer), alpha=.2)  +
+  facet_grid(fraction+PAP~class3+siRNA, scales='free')  +
+  ylab('Average Log2 Signal') +
+  lineplot_style
+```
+
+--> by far most signals centers at exact 0
+
+--> do a MWU test for position 0 H0 being that hexamer and no-hexamer classes are equal within each type
+
+```{r}
+(log2FCs_with_hex <- log2FCs %>%
+  filter(class3 == 'PAXT' | class3 == 'NEXT',
+         rel_pos == 0) %>%
+   left_join(., hexamer_info))
+```
+
+#### two-sided test
+
+```{r}
+log2FCs_with_hex %>%
+  group_by(class3, siRNA, PAP, fraction) %>%
+  do(tidy(wilcox.test(.$log2FC~.$hexamer))) %>%
+  dplyr::select(class3, siRNA, PAP, fraction, p.value) %>%
+  spread(class3, p.value) %>%
+  kable
+```
+
+#### one-sided tests
+
+
+```{r}
+levels(factor(log2FCs_with_hex$hexamer))
+```
+
+```{r}
+log2FCs_with_hex %>%
+  group_by(class3, siRNA, PAP, fraction) %>%
+  do(tidy(wilcox.test(.$log2FC~.$hexamer, alternative='greater'))) %>%
+  dplyr::select(class3, siRNA, PAP, fraction, p.value) %>%
+  spread(class3, p.value) %>%
+  kable(., digits = 20)
+```
+
+```{r}
+log2FCs_with_hex %>%
+  group_by(class3, siRNA, PAP, fraction) %>%
+  do(tidy(wilcox.test(.$log2FC~.$hexamer, alternative='less'))) %>%
+  dplyr::select(class3, siRNA, PAP, fraction, p.value) %>%
+  spread(class3, p.value) %>%
+  kable(., digits = 100)
+```
+
+## sessionInfo
+```{r}
+sessionInfo()
+```
+
