@@ -1,0 +1,356 @@
+---
+title: 'PROMPT classes motifs'
+author: "Manfred Schmid"
+output: 
+  pdf_document:
+    toc: true 
+    toc_depth: 3
+    fig_caption: true
+editor_options: 
+  chunk_output_type: console
+---
+
+`r format(Sys.time(), "%d %B, %Y; %R")`
+
+## Setup
+
+```{r setup, echo=TRUE}
+knitr::opts_chunk$set(fig.width=12, fig.height=8, 
+                      fig.path=paste0('../../Figures/MS_Gencode_PROMPT_motifs/'), 
+                      dev='pdf', 
+                      echo=TRUE, warning=FALSE, message=FALSE, 
+                      error=TRUE)
+```
+
+```{r load packages, echo=T, warning=F, message=F}
+suppressWarnings(library('tidyverse'))
+suppressWarnings(library('magrittr'))
+suppressWarnings(library('knitr'))
+suppressWarnings(library('rtracklayer'))
+suppressWarnings(library('seqPattern'))
+```
+
+## load genome
+```{r}
+suppressWarnings(library("BSgenome.Hsapiens.UCSC.hg38"))
+genome <- BSgenome.Hsapiens.UCSC.hg38
+```
+
+
+## load PROMPT categories
+
+```{r}
+(Z1_vs_Z8 <- read_tsv('../../data/PROMPT_sensitivities_Z1_Z8_RRP40_withextraclasses_withsizeFactors.txt') %>%
+  distinct(id, class3, class5))
+```
+
+```{r}
+class3 <- Z1_vs_Z8$class3
+class5 <- Z1_vs_Z8$class5
+names(class3) <- Z1_vs_Z8$id
+names(class5) <- Z1_vs_Z8$id
+```
+
+```{r}
+bedname <- '/Volumes/GenomeDK/annotations/hg38/Gencode_v28/PROMPT_TSS_to5kb_TSS_toMaxIn5kb_withend.bed'
+PROMPTs <- rtracklayer::import(bedname)
+PROMPTs$id <- sub('.*:', '',PROMPTs$name)
+PROMPTs$class3 <- class3[PROMPTs$id]
+PROMPTs$class5 <- class5[PROMPTs$id]
+
+
+PROMPTs$class3 <- factor(PROMPTs$class3, levels=c('PAXT', 'NEXT', 'BOTH'))
+PROMPTs$class <- PROMPTs$class3
+PROMPTs$class[PROMPTs$class=='not sig'] <- NA
+PROMPTs
+```
+
+
+```{r}
+PROMPTs_TES <- PROMPTs
+start(PROMPTs_TES) <- ifelse(strand(PROMPTs_TES)=='+', end(PROMPTs_TES), start(PROMPTs_TES))
+end(PROMPTs_TES) <- ifelse(strand(PROMPTs_TES)=='-', start(PROMPTs_TES), end(PROMPTs_TES))
+PROMPTs_TES
+```
+
+
+
+# PROMPT TES pm 100bp sequences
+
+#### get sequences for range around PROMPT 3' end
+
+using summit +/- 100
+
+```{r}
+offset <- 100
+```
+
+
+```{r}
+roi <- PROMPTs_TES
+
+start(roi) <- start(roi)-offset
+end(roi) <- end(roi)+offset
+unique(width(roi))
+```
+
+```{r}
+roi_pm100_seq <- getSeq(genome, roi)
+```
+
+
+#### fun to make ggplots of motif freqs
+
+```{r}
+tidy_pattern_df <- function(roi, seqs, patterns, offset, add_patterns = FALSE) {
+  pat_list <- getPatternOccurrenceList(regionsSeq = seqs, patterns = patterns)
+  
+  seqs_per_class <- roi %>% data.frame %>% group_by(class) %>% summarize(n= n())
+  
+  df <- lapply(seq_along(pat_list), function(i) tbl_df(pat_list[[i]]) %>%
+             mutate(pattern = patterns[i],
+                    class = roi$class[sequence],
+                    position = position - offset)) %>% 
+    bind_rows 
+  
+  if(add_patterns){
+    df$pattern <- str_flatten(patterns,collapse = '|')
+  }
+
+  df %>%
+    group_by(class, pattern, position) %>%
+    summarize(events=sum(value)) %>%
+    left_join(., seqs_per_class) %>%
+    mutate(freq = events/n)
+}
+```
+
+```{r}
+tidy_pattern_plot <- function(tidy_pattern_df){
+  ggplot(tidy_pattern_df, 
+         aes(x=position, y=freq, color=class)) + 
+    geom_line() +
+    xlab('bp to cluster center') + 
+    scale_color_manual(values=c('#1f77b4', '#ff7f0e', '#2ca02c', 'navyblue', 'red', 'lightgray')) +
+    theme_bw() + 
+    facet_wrap(~pattern, scales='free') +
+    theme(panel.grid=element_blank())
+}
+
+tidy_events_plot <- function(tidy_pattern_df){
+  ggplot(tidy_pattern_df, 
+         aes(x=position, y=events, color=class)) + 
+    geom_line() +
+    xlab('bp to cluster center') + 
+    scale_color_manual(values=c('#1f77b4', '#ff7f0e', '#2ca02c', 'navyblue', 'red', 'lightgray')) +
+    theme_bw() + 
+    facet_wrap(~pattern, scales='free') +
+    theme(panel.grid=element_blank())
+}
+```
+
+```{r}
+tidy_pattern_plot_swapped <- function(tidy_pattern_df){
+  ggplot(tidy_pattern_df, 
+         aes(x=position, y=freq, color=pattern)) + 
+    geom_line() +
+    xlab('bp to cluster center') + 
+    facet_wrap(~class) +
+    theme_bw()
+}
+```
+
+
+```{r}
+cumsum_plot <- function(df){
+  df %>%
+    arrange(position) %>%
+    group_by(pattern, class) %>%
+    mutate(cum_freq = cumsum(freq)) %>%
+    ggplot(., aes(x=position, y=cum_freq, color=class)) + 
+    geom_line() + 
+    facet_wrap(~pattern) +
+    xlab('bp to cluster center') + 
+    theme_bw()
+}
+```
+
+
+#### nucleotides
+
+nucleotides
+```{r all nucs}
+roi$class <- factor(roi$class3, levels=c('PAXT', 'NEXT'))
+
+tidy_pattern_df(roi, 
+                roi_pm100_seq, 
+                patterns = c('A', 'T', 'C', 'G'), 
+                offset) %>%
+  tidy_pattern_plot
+```
+
+#### hexamers
+```{r AWTAAA split}
+tidy_pattern_df(roi, 
+                roi_pm100_seq, 
+                patterns = c('AATAAA', 'ATTAAA'), 
+                offset) %>%
+  tidy_pattern_plot
+```
+
+```{r AWTAAA combined 2class}
+tidy_pattern_df(roi, 
+                roi_pm100_seq, 
+                patterns = c('AATAAA', 'ATTAAA'), 
+                offset,
+                add_patterns = T) %>%
+  tidy_pattern_plot
+```
+
+
+
+#### AWTAAA vs non-AWTAAA classes
+
+```{r}
+awtaaa_df <- getPatternOccurrenceList(regionsSeq = roi_pm100_seq, patterns = c('AATAAA', 'ATTAAA')) %>%
+  bind_rows
+
+hexamer_containing <- awtaaa_df %>%
+  mutate(position = position - offset) %>%
+  filter(position > -30, position < -10) %>%
+  distinct(sequence) %$%
+  sequence
+```
+
+
+```{r}
+PROMPTs$hexamer_at_TES <- 'no_TES_hexamer'
+PROMPTs$hexamer_at_TES[hexamer_containing] <- 'TES_hexamer'
+```
+
+```{r}
+PROMPTs %>%
+  data.frame %>%
+  group_by(hexamer_at_TES, class3) %>%
+  summarize(cnt=n()) %>%
+  ungroup %>%
+  spread(hexamer_at_TES, cnt) %>%
+  mutate(hexamer_freq = TES_hexamer/(no_TES_hexamer+TES_hexamer))
+```
+
+
+```{r}
+PROMPTs %>%
+  data.frame %>%
+  group_by(hexamer_at_TES, class5) %>%
+  summarize(cnt=n()) %>%
+  ungroup %>%
+  spread(hexamer_at_TES, cnt) %>%
+  mutate(hexamer_freq = TES_hexamer/(no_TES_hexamer+TES_hexamer))
+```
+
+```{r}
+PROMPTs$name <- paste0(sub('center_of:', '', PROMPTs$name) %>% sub(':.*', '', .), ':', sub(' ', '', PROMPTs$class3), ':', sub(' ', '',PROMPTs$class5), ':', PROMPTs$hexamer_at_TES)
+PROMPTs
+
+rtracklayer::export.bed(PROMPTs, '../../data/MS_Gencode_PROMPTs_with_class3_class5_with_sizefactors_hexameratTES.bed')
+
+rtracklayer::import('../../data/MS_Gencode_PROMPTs_with_class3_class5_with_sizefactors_hexameratTES.bed')
+
+```
+
+
+```{r hexamer at hexamer containing PROMPTs}
+tidy_pattern_df(hexamer_roi, 
+                hexamer_roi_pm100_seq, 
+                patterns = c('AATAAA', 'ATTAAA'), 
+                offset,
+                add_patterns = T) %>%
+  cumsum_plot
+```
+
+```{r hexamer at non hexamer containing PROMPTs}
+tidy_pattern_df(non_hexamer_roi, 
+                non_hexamer_roi_pm100_seq, 
+                patterns = c('AATAAA', 'ATTAAA'), 
+                offset,
+                add_patterns = T) %>%
+  cumsum_plot
+```
+
+```{r nucleotides at hexamer containing PROMPTs}
+tidy_pattern_df(hexamer_roi, 
+                hexamer_roi_pm100_seq, 
+                patterns = c('A', 'C', 'G', 'T'), 
+                offset) %>%
+  tidy_pattern_plot()
+```
+
+# Motifs from TSS to plus 5kb
+
+
+```{r}
+PROMPTs_TSSto5kb <- PROMPTs
+
+end(PROMPTs_TSSto5kb) <- ifelse(strand(PROMPTs_TSSto5kb)=='+', start(PROMPTs_TSSto5kb)+4999, end(PROMPTs_TSSto5kb))
+start(PROMPTs_TSSto5kb) <- ifelse(strand(PROMPTs_TSSto5kb)=='+', start(PROMPTs_TSSto5kb), end(PROMPTs_TSSto5kb)-4999)
+min(start(PROMPTs_TSSto5kb))
+```
+
+```{r}
+table(width(PROMPTs_TSSto5kb))
+```
+
+
+```{r}
+PROMPT5kb_seq <- getSeq(genome, PROMPTs_TSSto5kb)
+names(PROMPT5kb_seq) <- PROMPTs_TSSto5kb$name
+```
+
+
+#### hexamers
+```{r}
+hexmer_added <- tidy_pattern_df(PROMPTs_TSSto5kb, 
+                PROMPT5kb_seq, 
+                patterns = c('AATAAA', 'ATTAAA'), 
+                offset=0,
+                add_patterns = T) 
+```
+
+```{r AWTAAA combined cumsum TSS to 5kb}
+cumsum_plot(hexmer_added)
+```
+
+```{r AWTAAA combined freq per 500bp TSS to 5kb}
+hexmer_added %>%
+  mutate(position=500*floor(position/500)) %>%
+  group_by(class, pattern, position) %>%
+  summarize(total_n=mean(n),
+            total_events=sum(events),
+            freq=total_events/total_n) %>%
+  tidy_pattern_plot +
+  xlab('bp to TSS')
+```
+
+
+## nucleotides
+```{r nucleotides freq per 500bp TSS to 5kb}
+tidy_pattern_df(PROMPTs_TSSto5kb, 
+                PROMPT5kb_seq, 
+                patterns = c('A', 'T', 'C', 'G'), 
+                offset=0) %>%
+  mutate(position=100*floor(position/100)) %>%
+  filter(position != 5000) %>%
+  group_by(class, pattern, position) %>%
+  summarize(total_n=mean(n),
+            total_events=sum(events),
+            freq=total_events/total_n) %>%
+  tidy_pattern_plot +
+  xlab('bp to TSS')
+```
+
+
+# sessionInfo
+```{r}
+sessionInfo()
+```
