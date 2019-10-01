@@ -1,3 +1,4 @@
+
 ---
 title: 'aggregate genome-wide 3p end data'
 author: "Manfred Schmid"
@@ -96,24 +97,7 @@ awk '{sum+=($3-$2)}END{print sum}' "${basename}_minus.bedgraph"
 awk '{sum+=($4*($3-$2))}END{print sum}' "${basename}_minus.bedgraph"
 # 1.0568e+08 --> total signal
 
-## 2. remove peaks with signal below 2 and merge with distance=25
-
-for strand in plus minus
-do
-  echo $strand
-  cat "${basename}_${strand}.bedgraph" | \
-  awk '$4 > 2' | \
-  bedtools merge -d 25 -c 4 -o sum -i stdin > "${basename}_filtg2_merged25_${strand}.bedgraph"
-
-  bedGraphToBigWig "${basename}_filtg1_merged25_${strand}.bedgraph" $chrs "${basename}_filtg2_merged25_${strand}.bw"
-done
-
-wc -l "${basename}_filtg2_merged25_plus.bedgraph"
-#1050073 /home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov/Singles_clusters/Singles_union_filtg2_merged25_plus.bedgraph
-
-wc -l "${basename}_filtg2_merged25_minus.bedgraph"
-#1006243 /home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov/Singles_clusters/Singles_union_filtg2_merged25_minus.bedgraph
-
+## 2. remove peaks with signal below 5 and merge with distance=25
 
 for strand in plus minus
 do
@@ -300,121 +284,6 @@ sort -k1,1n | uniq -c | tail ##largest clusters are a few kb, but these are sing
 # 1 2475
 # 1 2516
 # 1 2678
-
-
-5. Merge adjacent Z8 cases
-#-> got cluster categories with classification from DESeq2
-bed="/home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov/Singles_clusters/RRP40Z1Z8clusters_lastexonssf_with_cat_and_geneanno.bed"
-
-awk '{OFS="\t"}{
-  split($4,ar,":")
-  if(ar[1]=="both"){
-    color="255,0,0"
-  }else if(ar[1]=="Z1"){
-    color="0,255,0"
-  }else if(ar[1]=="Z8"){
-    color="0,0,255"
-  }
-  print $0"\t"$2"\t"$3"\t"color
-}' $bed > ${bed/.bed/_colored.bed}
-
-bedtools slop -b 2000 -g $chrs -i $bed | \
-awk '$4 ~ /^Z8/'| \
-bedtools merge -s -c 4,5,6 -o collapse,first,first | \
-awk '{OFS="\t"}{
-  n=split($5,ar,",")
-  name="Z8:"
-  for(i=1;i<n;i++){
-    split(ar[i],aar,":")
-    if(aar[3] == "protein_coding"){pc=1}
-    name=name""aar[2]","
-  }
-  split(ar[i],aar,":")
-  if(aar[3] == "protein_coding"){pc=1}
-  name=name""aar[2]
-  if(pc == 1){name=name":protein_coding"}
-  pc=0
-  chrn=$1;
-  sub("chr","",chrn);
-  if(chrn=="X"){chrn=23};
-  if(chrn=="Y"){chrn=24};
-  print chrn"\t"$1"\t"$2"\t"$3"\t"name"\t"$6"\t"$7
-}' | sort -k1,1n -k3,3n | cut -f 2-7 > ${bed/.bed/_Z8_pm2000merged.bed}
-
-awk '$4 ~ /^Z8/' $bed | wc -l
-#20182
-
-awk '{if($4 ~ /^Z8/){len += ($3-$2)}}END{print len}' $bed
-#979261 --> total bp in Z8 clusters
-
-wc -l ${bed/.bed/_Z8_pm2000merged.bed}
-#12710 /home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov/Singles_clusters/RRP40Z1Z8clusters_lastexonssf_with_cat_and_geneanno_Z8_pm1000merged.bed
-
-awk '{if($4 ~ /^Z8/){len += ($3-$2)}}END{print len}' ${bed/.bed/_Z8_pm2000merged.bed}
-#56207349 --> total bp in Z8 clusters after merging --> about 55x more !!
-
-
-awk '!($4 ~ /protein/)' ${bed/.bed/_Z8_pm2000merged.bed} | wc -l
-#4150
-
-
-#### add center of mass of new larger intervals
-strand="plus"
-awk '$6=="+"' ${bed/.bed/_Z8_pm2000merged.bed} | \
-bedtools intersect -sorted -loj -a - -b "${basename}_${strand}.bedgraph" | \
-awk -v maxv=0 '{OFS="\t"}{
-  if(cluster==$4){
-    if($10 > maxv){
-      maxv=$10
-      pos=$8
-    }
-  }else{
-    if(maxv > 0){
-      print chr"\t"start"\t"end"\t"cluster":"pos"\t"score"\t+"
-    }
-    chr=$1
-    start=$2
-    end=$3
-    score=0
-    i+=1
-    cluster=$4
-    maxv=$10
-    pos=$8
-  }
-}END{
-  print chr"\t"start"\t"end"\t"cluster":"pos"\t"score"\t+"
-}' > ${bed/.bed/_Z8_pm2000merged_with_center_plus.bed}
-
-strand="minus"
-cat ${bed/.bed/_Z8_pm2000merged.bed} | \
-bedtools intersect -sorted -loj -a - -b "${basename}_${strand}.bedgraph" | \
-awk '$6=="-"' |
-awk -v maxv=0 '{OFS="\t"}{
-  if(cluster==$4){
-    if($10>=maxv){
-      maxv=$10
-      pos=$8
-    }
-  }else{
-    if(maxv > 0){
-      print chr"\t"start"\t"end"\t"cluster":"pos"\t"score"\t-"
-    }
-    chr=$1
-    start=$2
-    end=$3
-    score=0
-    cluster=$4
-    maxv=$10
-    pos=$8
-  }
-}END{
-  print chr"\t"start"\t"end"\t"cluster":"pos"\t"score"\t+"
-}' > ${bed/.bed/_Z8_pm2000merged_with_center_minus.bed}
-
-cat ${bed/.bed/_Z8_pm2000merged_with_center_plus.bed} ${bed/.bed/_Z8_pm2000merged_with_center_minus.bed} | awk '!($4 ~ /protein/)' | wc -l
-#4150
-
-cat ${bed/.bed/_Z8_pm2000merged_with_center_plus.bed} ${bed/.bed/_Z8_pm2000merged_with_center_minus.bed} | sort -k1,1 -k2,2n > ${bed/.bed/_Z8_pm2000merged_with_center.bed}
 
 ```
 
