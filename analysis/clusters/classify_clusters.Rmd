@@ -1,0 +1,576 @@
+---
+title: 'Analysis and classification of clusters'
+author: "Manfred Schmid"
+output: 
+  pdf_document:
+    toc: true 
+    toc_depth: 3
+    fig_caption: true
+editor_options: 
+  chunk_output_type: console
+---
+
+`r format(Sys.time(), "%d %B, %Y; %R")`
+
+## Setup
+
+```{r setup, echo=TRUE}
+knitr::opts_chunk$set(fig.width=12, fig.height=8, 
+                      fig.path=paste0('../../Figures/cluster_log2FC/'), 
+                      dev='pdf', 
+                      echo=TRUE, warning=FALSE, message=FALSE, 
+                      error=TRUE)
+```
+
+```{r load packages, echo=T, warning=F, message=F}
+suppressWarnings(library('tidyverse'))
+suppressWarnings(library('magrittr'))
+suppressWarnings(library('knitr'))
+suppressWarnings(library('broom'))
+```
+
+
+## load the data
+
+```{r}
+load('../../data/res_ds_combined_RRP40Z1Z8clusters_lastexonsf.RData', verbose = TRUE)
+res_df
+```
+
+
+## classify by NEXT vs PAXT sensitivity
+
+total sig up vs down regulated count:
+```{r}
+res_df %>%
+  distinct(row, sig, comparison, libtype) %>%
+  group_by(comparison, sig, libtype) %>%
+  summarize(cnt = n()) %>%
+  spread(sig, cnt) %>%
+  kable
+```
+
+--> ZFC3H1 has smallest bias towards upregulation
+
+
+#### classify using Z1 vs Z8 upregulated
+
+```{r}
+z8_up <- res_df %>%
+  filter(comparison == 'siZCCHC8_rel_siGFP', sig == 'sig_up') %$%
+  row %>%
+  unique
+
+z1_up <- res_df %>%
+  filter(comparison == 'siZFC3H1_rel_siGFP', sig == 'sig_up') %$%
+  row %>%
+  unique
+
+both_clusters <- intersect(z8_up, z1_up) %>% data.frame(cluster=.) %>% mutate(class='BOTH')
+next_clusters <- setdiff(z8_up, z1_up) %>% data.frame(cluster=.) %>% mutate(class='NEXT')
+paxt_clusters <- setdiff(z1_up, z8_up) %>% data.frame(cluster=.) %>% mutate(class='PAXT')
+notsig_clusters <- setdiff(unique(res_df$row), c(z8_up, z1_up)) %>% data.frame(cluster=.) %>% mutate(class='NOT_SIG')
+```
+
+```{r}
+(cluster_classes <- bind_rows(both_clusters, next_clusters, paxt_clusters, notsig_clusters) %>%
+  tbl_df)
+```
+
+```{r}
+table(cluster_classes$class)
+```
+
+
+```{r}
+save(cluster_classes, file = '../../data/cluster_classes.RData')
+```
+
+```{r}
+load('../../data/cluster_classes.RData')
+cluster_classes
+```
+
+```{r}
+res_df %<>%
+  left_join(., dplyr::rename(cluster_classes, row=cluster)) %>%
+   mutate(class = factor(class, levels=c('PAXT', 'NEXT', 'BOTH', 'NOT_SIG')))
+```
+
+#### PAXT examples
+```{r}
+res_df %>%
+  filter(class == 'PAXT', comparison == 'siZFC3H1_rel_siGFP') %>%
+  group_by(row) %>%
+  arrange(-log2FoldChange)
+```
+
+
+#### NEXT examples
+```{r}
+res_df %>%
+  filter(class == 'NEXT', comparison == 'siZCCHC8_rel_siGFP') %>%
+  group_by(row) %>%
+  arrange(padj)
+```
+
+
+#### BOTH examples
+```{r}
+res_df %>%
+  filter(class == 'BOTH', comparison == 'siZCCHC8.ZFC3H1_rel_siGFP') %>%
+  group_by(row) %>%
+  arrange(padj)
+```
+
+
+
+## scatter Z1 vs Z8 with class per lib type
+
+```{r}
+lfc_spread <- res_df %>%
+  dplyr::select(row, comparison, libtype, class, log2FoldChange) %>%
+  spread(comparison, log2FoldChange)
+```
+
+```{r}
+ns_lfc_spread <- filter(lfc_spread, class == 'NOT_SIG')
+sig_lfc_spread <- filter(lfc_spread, class != 'NOT_SIG')
+```
+
+
+```{r LFCs Z1 vs Z8 with classes colored original}
+ggplot(sample_n(ns_lfc_spread,20000),
+       aes(x=siZCCHC8_rel_siGFP, y=siZFC3H1_rel_siGFP)) +
+  geom_point(color = 'black', alpha=.01, size=.01) +
+  geom_point(data=sig_lfc_spread, aes(x=siZCCHC8_rel_siGFP, y=siZFC3H1_rel_siGFP, color=class), size=.1, alpha=.1) +
+  facet_wrap(~libtype, scales='free') +
+  theme_bw() +
+  theme(panel.grid = element_blank())
+```
+
+
+```{r LFCs Z1 vs Z8 with classes colored original floored}
+sig_lfc_spread %>%
+  mutate(siZCCHC8_rel_siGFP = ifelse(siZCCHC8_rel_siGFP > 10, 10, siZCCHC8_rel_siGFP),
+         siZCCHC8_rel_siGFP = ifelse(siZCCHC8_rel_siGFP < -10, -10, siZCCHC8_rel_siGFP),
+         siZFC3H1_rel_siGFP = ifelse(siZFC3H1_rel_siGFP > 10, 10, siZFC3H1_rel_siGFP),
+         siZFC3H1_rel_siGFP = ifelse(siZFC3H1_rel_siGFP < -10, -10, siZFC3H1_rel_siGFP)) %>%
+  ggplot(., aes(x=siZCCHC8_rel_siGFP, y=siZFC3H1_rel_siGFP, color=class)) +
+  geom_point(size=.1, alpha=.1) +
+  facet_wrap(~libtype, scales='free') +
+  geom_hline(yintercept=0, linetype=2, size=.1) +
+  geom_vline(xintercept=0, linetype=2, size=.1) +
+  theme_bw() +
+  theme(panel.grid = element_blank())
+```
+
+
+
+#### violins
+
+```{r}
+res_df %<>%
+  tidyr::separate(libtype, c('PAP', 'fraction'), sep=' ') %>%
+  mutate(comparison = factor(comparison, levels=c('siRRP40_rel_siGFP', 'siZCCHC8_rel_siGFP', 'siZFC3H1_rel_siGFP', 'siZCCHC8.ZFC3H1_rel_siGFP')))
+```
+
+
+```{r violin plot log2FC class comparisons, width=3, height=2.5}
+color_set <- c('#D42027', '#186734', '#0099CC', '#2C3A96')
+
+res_df %>%
+  filter(class != 'NOT_SIG') %>%
+  ggplot(., aes(x=comparison, y=log2FoldChange, fill=comparison)) +
+  geom_violin(scale = 'width') +
+  geom_boxplot(fill='gray', width=.2, outlier.shape=NA) +
+  coord_cartesian(ylim=c(-4,8)) +
+  geom_hline(yintercept = 0, color='orange', linetype=2, size=.25) +
+  facet_grid(fraction+PAP~class) +
+  scale_fill_manual(values=color_set) +
+  theme_bw() +
+  theme(axis.text.x=element_blank(),
+        axis.title.x=element_blank(),
+        axis.text.y=element_text(size=6, color='black'),
+        strip.text = element_text(size=6, color='black'),
+        axis.title.y=element_text(size=6, color='black'),
+        panel.grid=element_blank(),
+        legend.title = element_text(size=6),
+        legend.key.size = unit(6,'points'),
+        legend.text = element_text(size=6))
+```
+
+```{r violin plot log2FC class comparisons without dblKD, width=3, height=2.5}
+res_df %>%
+  filter(class != 'NOT_SIG', comparison != 'siZCCHC8.ZFC3H1_rel_siGFP') %>%
+  ggplot(., aes(x=comparison, y=log2FoldChange, fill=comparison)) +
+  geom_violin(scale = 'width') +
+  geom_boxplot(fill='gray', width=.2, outlier.shape=NA) +
+  coord_cartesian(ylim=c(-4,8)) +
+  geom_hline(yintercept = 0, color='orange', linetype=2, size=.25) +
+  facet_grid(fraction+PAP~class) +
+  scale_fill_manual(values=color_set) +
+  theme_bw() +
+  theme(axis.text.x=element_blank(),
+        axis.title.x=element_blank(),
+        axis.text.y=element_text(size=6, color='black'),
+        strip.text = element_text(size=6, color='black'),
+        axis.title.y=element_text(size=6, color='black'),
+        panel.grid=element_blank(),
+        legend.title = element_text(size=6),
+        legend.key.size = unit(6,'points'),
+        legend.text = element_text(size=6))
+```
+
+
+#### mean medians and wilcox p value of log2FC between kds
+
+
+dbl vs Z8
+```{r}
+res_df %>% 
+  group_by(class, PAP, fraction, comparison) %>%
+  summarize(median_LFC=median(log2FoldChange),
+            mean_LFC=mean(log2FoldChange)) %>%
+  kable
+```
+
+
+dbl vs Z8
+```{r}
+res_df %>% group_by(class, PAP, fraction) %>%
+  do(tidy(wilcox.test(.$log2FoldChange[grepl('^siZCCHC8.ZFC3H1', .$comparison)], .$log2FoldChange[grepl('^siZCCHC8_rel', .$comparison)])))
+```
+
+dbl vs Z1
+```{r}
+res_df %>% group_by(class, PAP, fraction) %>%
+  do(tidy(wilcox.test(.$log2FoldChange[grepl('^siZCCHC8.ZFC3H1', .$comparison)], .$log2FoldChange[grepl('^siZFC3H1_rel', .$comparison)])))
+```
+
+
+#### heatmaps
+
+```{r heatmap plot log2FC class comparisons}
+res_df %>%
+  filter(class != 'NOT_SIG', comparison != 'siZCCHC8.ZFC3H1_rel_siGFP') %>%
+  mutate(log2FoldChange = ifelse(log2FoldChange > 10, 10, log2FoldChange),
+         log2FoldChange = ifelse(log2FoldChange < -10, -10, log2FoldChange)) %>%
+  ggplot(., aes(x=comparison, y=row, fill=log2FoldChange)) +
+  geom_tile() +
+  facet_grid(class~fraction+PAP, scales='free', space='free') +
+  scale_fill_gradient2(low='firebrick4', mid='white', high = 'navyblue', midpoint=0) +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=45, hjust=1),
+        axis.text.y=element_blank(),
+        panel.grid=element_blank())
+```
+
+
+
+## prepare and save genomic location
+
+bed files
+```{r, eval=FALSE}
+bed_plus="/Volumes/GenomeDK/faststorage/Guifen/Lexogen_July_Sept_Nov/Singles_clusters/Singles_union_filtgm5_merged25_filtg20_with_center_plus.bed"
+bed_minus="/Volumes/GenomeDK/faststorage/Guifen/Lexogen_July_Sept_Nov/Singles_clusters/Singles_union_filtgm5_merged25_filtg20_with_center_minus.bed"
+
+plus_anno <- rtracklayer::import(bed_plus)
+minus_anno <- rtracklayer::import(bed_minus)
+
+(clusters <- c(plus_anno, minus_anno))
+```
+
+
+add to classification file
+
+```{r, eval=FALSE}
+cluster_class_map <- cluster_classes$class
+names(cluster_class_map) <- cluster_classes$cluster
+```
+
+```{r, eval=FALSE}
+clusters$class <- cluster_class_map[clusters$name]
+clusters$name <- paste0(clusters$name, ':', clusters$class)
+```
+
+save this
+```{r, eval=FALSE}
+rtracklayer::export.bed(clusters,con = '../../data/clusters.bed')
+```
+
+
+## load clusters and annotation
+```{r, eval=TRUE}
+(clusters <- rtracklayer::import('../../data/clusters.bed'))
+```
+
+```{r}
+clusters$class <- sub('.*:', '', clusters$name)
+clusters$cluster <- sub(':.*', '', clusters$name)
+clusters$center <- sapply(clusters$name, function(n) as.integer(str_split(n, ':', simplify=T)[2]))
+clusters
+```
+
+```{r}
+(clusters_tbl <- data.frame(clusters) %>% 
+  tbl_df)
+```
+
+
+#### clusters per class counts
+
+n:
+```{r}
+table(clusters_tbl$class)
+```
+
+fraction:
+```{r}
+table(clusters_tbl$class)/sum(table(clusters_tbl$class))
+```
+
+#### amount of genomic positions in the various categories
+
+total bp in clusters:
+```{r}
+(total_cluster_bps <- sum(clusters_tbl$width))
+```
+
+total bp per class
+
+```{r}
+clusters_tbl %>%
+  group_by(class) %>%
+  summarize(total_bp = sum(width)) %>%
+  mutate(freq_in_class = total_bp/total_cluster_bps)
+```
+
+
+```{r stacked barplot bps per class}
+clusters_tbl %>%
+  group_by(class) %>%
+  summarize(total_bp = sum(width)) %>%
+  mutate(freq_in_class = total_bp/total_cluster_bps,
+         class = factor(class, levels=c('PAXT', 'BOTH', 'NEXT', 'NOT_SIG'))) %>%
+  ggplot(., aes(x=1, y=total_bp, fill=class)) +
+  geom_bar(stat='identity')
+```
+
+#### amount of total signal in the various categories
+
+need to get signal per cluster.
+obviously depends a lot on KD and library type, simply do this for all...
+```{r}
+load('../../data/count_mat_RRP40Z1Z8clusters.RData', verbose=TRUE)
+glimpse(count_mat)
+```
+
+normalize raw reads
+```{r}
+(nfs <- read_tsv('../../data/last_exon_sizeFactors.table') %>%
+  mutate(full_lib_name = paste0(series, '_', lib_name)) %>%
+  dplyr::select(full_lib_name, geom_mean_sf))
+```
+
+
+```{r}
+(norm_cnt_df <- count_mat %>%
+  data.frame %>% 
+  rownames_to_column('cluster') %>%
+  gather(full_lib_name, cnt, -cluster) %>%
+  tbl_df %>%
+  left_join(., nfs) %>%
+  mutate(norm_cnt = cnt/geom_mean_sf) %>%
+  dplyr::select(cluster, full_lib_name, norm_cnt) %>%
+  tidyr::separate(full_lib_name, c('series', 'siRNA', 'PAP', 'fraction', 'rep'), sep='_') %>%
+  group_by(cluster, siRNA, fraction, PAP) %>%
+  summarise(norm_cnt = mean(norm_cnt)))
+```
+
+```{r}
+(norm_cnt_df %<>% left_join(., cluster_classes))
+```
+
+```{r}
+save(norm_cnt_df, file = '../../data/norm_cluster_counts.RData')
+```
+
+```{r}
+distinct(norm_cnt_df, cluster, class) %$%
+  class %>% 
+  table
+```
+
+
+```{r}
+(total_cluster_signal <- norm_cnt_df %>%
+   group_by(siRNA, fraction, PAP) %>%
+   summarize(total_incluster_norm_cnt = sum(norm_cnt)))
+```
+
+
+total bp per class
+
+```{r}
+(signal_per_class <- norm_cnt_df %>%
+   group_by(class, siRNA, fraction, PAP) %>%
+   summarize(total_norm_cnt_per_class = sum(norm_cnt)) %>%
+  left_join(., total_cluster_signal) %>%
+   mutate(freq_in_class = total_norm_cnt_per_class/total_incluster_norm_cnt))
+```
+
+
+```{r}
+signal_per_class %>%
+  filter(siRNA == 'siGFP')
+```
+
+```{r}
+signal_per_class %>%
+  filter(siRNA == 'siRRP40')
+```
+
+```{r}
+signal_per_class %>%
+  filter(siRNA == 'siZCCHC8')
+```
+
+```{r}
+signal_per_class %>%
+  filter(siRNA == 'siZFC3H1')
+```
+
+```{r}
+signal_per_class %>%
+  filter(siRNA == 'siZCCHC8.ZFC3H1')
+```
+
+
+```{r stacked barplot total signal per class}
+signal_per_class %>%
+  ungroup %>%
+  mutate(class = factor(class, levels=c('PAXT', 'BOTH', 'NEXT', 'NOT_SIG'))) %>%
+  ggplot(., aes(x=siRNA, y=total_norm_cnt_per_class, fill=class)) +
+  geom_bar(stat='identity') +
+  facet_grid(fraction~PAP) +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        axis.text.x = element_text(angle=45, hjust=1))
+```
+
+
+#### add signal outside clusters
+
+```{r}
+(total_reads_per_lib <- read_tsv('../../data/Raw_reads_per_lib.txt'))
+```
+
+
+
+```{r}
+(norm_total_reads_per_lib <- total_reads_per_lib %>%
+  mutate(fraction = sub('put', '', fraction),
+         siRNA = sub('\\+', '\\.', siRNA),
+         full_lib_name = paste0(series, '_', siRNA, '_', PAP, '_', fraction), 
+         full_lib_name = ifelse(is.na(replicate), full_lib_name, paste0(full_lib_name, '_', replicate))) %>%
+  dplyr::select(full_lib_name, reads) %>%
+  left_join(., nfs) %>%
+  mutate(norm_genome_reads = reads/geom_mean_sf) %>%
+  tidyr::separate(full_lib_name, c('series', 'siRNA', 'PAP', 'fraction', 'replicate'), sep='_') %>%
+  group_by(siRNA, PAP, fraction) %>%
+  summarize(total_genome_norm_cnt = mean(norm_genome_reads)))
+```
+
+
+```{r norm reads in genome vs in cluster}
+left_join(total_cluster_signal, norm_total_reads_per_lib) %>%
+  gather(in_cluster, norm_cnt, -siRNA, -fraction, -PAP) %>%
+  ggplot(., aes(x=siRNA, y=norm_cnt, fill=in_cluster)) +
+  geom_bar(stat='identity', position='dodge') +
+  facet_grid(.~PAP+fraction) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=45, hjust=1),
+        panel.grid=element_blank())
+```
+
+
+```{r}
+(not_cluster <- left_join(total_cluster_signal, norm_total_reads_per_lib) %>%
+  mutate(total_norm_cnt_per_class = total_genome_norm_cnt-total_incluster_norm_cnt, 
+         class = 'outside_cluster') %>%
+  dplyr::select(class, siRNA, PAP, fraction, total_genome_norm_cnt, total_norm_cnt_per_class))
+```
+
+
+```{r}
+signal_per_class_vs_genome <- left_join(signal_per_class, norm_total_reads_per_lib) %>%
+  dplyr::select(class, siRNA, PAP, fraction, total_genome_norm_cnt, total_norm_cnt_per_class) %>%
+  bind_rows(., not_cluster) %>%
+  mutate(freq_in_class = total_norm_cnt_per_class/total_genome_norm_cnt)
+```
+
+
+```{r stacked barplot total signal per class vs genome}
+signal_per_class_vs_genome %>%
+  ungroup %>%
+  mutate(class = factor(class, levels=c('PAXT', 'BOTH', 'NEXT', 'NOT_SIG', 'outside_cluster'))) %>%
+  ggplot(., aes(x=siRNA, y=total_norm_cnt_per_class, fill=class)) +
+  geom_bar(stat='identity') +
+  facet_grid(fraction~PAP) +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        axis.text.x = element_text(angle=45, hjust=1))
+```
+
+```{r stacked barplot freq per class vs genome}
+signal_per_class_vs_genome %>%
+  ungroup %>%
+  mutate(class = factor(class, levels=c('PAXT', 'BOTH', 'NEXT', 'NOT_SIG', 'outside_cluster'))) %>%
+  ggplot(., aes(x=siRNA, y=freq_in_class, fill=class)) +
+  geom_bar(stat='identity') +
+  facet_grid(fraction~PAP) +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        axis.text.x = element_text(angle=45, hjust=1))
+```
+
+```{r}
+signal_per_class_vs_genome %>%
+  dplyr::rename(genome = total_genome_norm_cnt,
+                in_class = total_norm_cnt_per_class) %>%
+  filter(siRNA == 'siGFP')
+```
+
+```{r}
+signal_per_class_vs_genome %>%
+  dplyr::rename(genome = total_genome_norm_cnt,
+                in_class = total_norm_cnt_per_class) %>%
+  filter(siRNA == 'siRRP40')
+```
+
+```{r}
+signal_per_class_vs_genome %>%
+  dplyr::rename(genome = total_genome_norm_cnt,
+                in_class = total_norm_cnt_per_class) %>%
+  filter(siRNA == 'siZCCHC8')
+```
+
+```{r}
+signal_per_class %>%
+  dplyr::rename(genome = total_genome_norm_cnt,
+                in_class = total_norm_cnt_per_class) %>%
+  filter(siRNA == 'siZFC3H1')
+```
+
+```{r}
+signal_per_class_vs_genome %>%
+  dplyr::rename(genome = total_genome_norm_cnt,
+                in_class = total_norm_cnt_per_class) %>%
+  filter(siRNA == 'siZCCHC8.ZFC3H1')
+```
+
+
+```{r}
+sessionInfo()
+```
