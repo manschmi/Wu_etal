@@ -1,0 +1,220 @@
+---
+title: 'cluster motifs'
+author: "Manfred Schmid"
+output: 
+  pdf_document:
+    toc: true 
+    toc_depth: 3
+    fig_caption: true
+editor_options: 
+  chunk_output_type: console
+---
+
+`r format(Sys.time(), "%d %B, %Y; %R")`
+
+## Setup
+
+```{r setup, echo=TRUE}
+knitr::opts_chunk$set(fig.width=12, fig.height=8, 
+                      fig.path=paste0('../../Figures/cluster_motifs/'), 
+                      dev='pdf', 
+                      echo=TRUE, warning=FALSE, message=FALSE, 
+                      error=TRUE)
+```
+
+```{r load packages, echo=T, warning=F, message=F}
+suppressWarnings(library('tidyverse'))
+suppressWarnings(library('magrittr'))
+suppressWarnings(library('knitr'))
+suppressWarnings(library('seqPattern'))
+```
+
+
+## load cluster categories
+
+
+```{r}
+(clusters <- rtracklayer::import('../../data/clusters.bed'))
+```
+
+
+```{r}
+clusters$class <- sub('.*:', '', clusters$name)
+clusters$name <- sub(':BOTH|:NOT_SIG|:NEXT|:PAXT', '', clusters$name)
+clusters$summit <- as.integer(sub('.*:', '', clusters$name))+1
+#clusters$summit <- ifelse(strand(clusters)=="+", clusters$summit+1, clusters$summit)
+
+clusters
+```
+
+
+
+## load genome
+```{r}
+library("BSgenome.Hsapiens.UCSC.hg38")
+genome <- BSgenome.Hsapiens.UCSC.hg38
+```
+
+
+# all clusters sequences
+
+#### get sequences for range around cluster summits
+
+using summit +/- 100
+
+```{r}
+offset <- 100
+```
+
+
+```{r}
+roi <- clusters[clusters$class != 'NOT_SIG',]
+roi$cluster_start <- start(roi)
+roi$cluster_end <- end(roi)
+
+start(roi) <- ifelse(strand(roi)=="+",roi$summit-offset+1,roi$summit-offset-1)
+end(roi) <-  ifelse(strand(roi)=="+",roi$summit+offset+1,roi$summit+offset-1)
+```
+
+```{r}
+roi_pm100_seq <- getSeq(genome, roi)
+```
+
+
+#### fun to make ggplots of motif freqs
+
+```{r}
+tidy_pattern_df <- function(roi, seqs, patterns, offset, add_patterns = FALSE) {
+  pat_list <- getPatternOccurrenceList(regionsSeq = seqs, patterns = patterns)
+  
+  seqs_per_class <- roi %>% data.frame %>% group_by(class) %>% summarize(n= n())
+  
+  df <- lapply(seq_along(pat_list), function(i) tbl_df(pat_list[[i]]) %>%
+             mutate(pattern = patterns[i],
+                    class = roi$class[sequence],
+                    position = position - offset)) %>% 
+    bind_rows 
+  
+  if(add_patterns){
+    df$pattern <- str_flatten(patterns,collapse = '|')
+  }
+
+  df %>%
+    group_by(class, pattern, position) %>%
+    summarize(events=n()) %>%
+    left_join(.,seqs_per_class ) %>%
+    mutate(freq = events/n)
+}
+```
+
+```{r}
+tidy_pattern_plot <- function(tidy_pattern_df){
+  ggplot(tidy_pattern_df, 
+         aes(x=position, y=freq, color=class)) + 
+    geom_line() +
+    xlab('bp to cluster center') + 
+    theme_bw() + 
+    facet_wrap(~pattern, scales='free') 
+}
+```
+
+```{r}
+tidy_pattern_plot_swapped <- function(tidy_pattern_df){
+  ggplot(tidy_pattern_df, 
+         aes(x=position, y=freq, color=pattern)) + 
+    geom_line() +
+    xlab('bp to cluster center') + 
+    facet_wrap(~class) +
+    theme_bw()
+}
+```
+
+
+```{r}
+cumsum_plot <- function(df){
+  df %>%
+    arrange(position) %>%
+    group_by(pattern, class) %>%
+    mutate(cum_freq = cumsum(freq)) %>%
+    ggplot(., aes(x=position, y=cum_freq, color=class)) + 
+    geom_line() + 
+    facet_wrap(~pattern) +
+    xlab('bp to cluster center') + 
+    theme_bw()
+}
+```
+
+
+#### hexamers
+```{r AWTAAA split}
+tidy_pattern_df(roi, 
+                roi_pm100_seq, 
+                patterns = c('AATAAA', 'ATTAAA'), 
+                offset) %>%
+  tidy_pattern_plot
+```
+
+```{r AWTAAA combined}
+tidy_pattern_df(roi, 
+                roi_pm100_seq, 
+                patterns = c('AATAAA', 'ATTAAA'), 
+                offset,
+                add_patterns = T) %>%
+  tidy_pattern_plot
+```
+
+```{r AWTAAA combined cumsum}
+tidy_pattern_df(roi, 
+                roi_pm100_seq, 
+                patterns = c('AATAAA', 'ATTAAA'), 
+                offset,
+                add_patterns = T) %>%
+  cumsum_plot
+```
+
+
+# subclass of clusters with and without hexamers
+
+
+```{r}
+awtaaa_df <- getPatternOccurrenceList(regionsSeq = roi_pm100_seq, patterns = c('AATAAA', 'ATTAAA')) %>% bind_rows
+
+```
+
+
+```{r}
+hexamer_containing <- awtaaa_df %>%
+  mutate(position = position - offset) %>%
+  filter(position > -30, position < -10) %>%
+  distinct(sequence) %$%
+  sequence
+```
+
+```{r}
+roi$hexamer_at_TES <- 'no_TES_hexamer'
+roi$hexamer_at_TES[hexamer_containing] <- 'TES_hexamer'
+```
+
+```{r}
+roi %>%
+  data.frame %>%
+  group_by(hexamer_at_TES, class) %>%
+  summarize(cnt=n()) %>%
+  ungroup %>%
+  spread(hexamer_at_TES, cnt) %>%
+  mutate(hexamer_freq = TES_hexamer/(no_TES_hexamer+TES_hexamer))
+```
+
+```{r}
+roi$name <- paste0(roi$name, ':', roi$class, ':', roi$hexamer_at_TES)
+start(roi) <- roi$cluster_start
+end(roi) <- roi$cluster_end
+roi
+rtracklayer::export.bed(roi, '../../data/cluster_with_class_and_hexameratTES.bed')
+```
+
+
+# sessionInfo
+```{r}
+sessionInfo()
+```
