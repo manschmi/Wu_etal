@@ -1,0 +1,307 @@
+---
+title: 'Metagene around cluster summits'
+author: "Manfred Schmid"
+output: 
+  pdf_document:
+    toc: true 
+    toc_depth: 3
+    fig_caption: true
+---
+
+`r format(Sys.time(), "%d %B, %Y; %R")`
+
+## Setup
+
+```{r setup, echo=TRUE}
+knitr::opts_chunk$set(fig.width=12, fig.height=8, 
+                      fig.path=paste0('../../Figures/cluster_3endseq_metagene/'), 
+                      dev='pdf', 
+                      echo=TRUE, warning=FALSE, message=FALSE, 
+                      error=TRUE)
+```
+
+```{r load packages, echo=T, warning=F, message=F}
+suppressWarnings(library('tidyverse'))
+suppressWarnings(library('magrittr'))
+suppressWarnings(library('knitr'))
+suppressWarnings(library('broom'))
+suppressWarnings(library('RMetaTools'))
+```
+
+
+```{r}
+lineplot_style <- list(
+  scale_color_manual(values=c('#1f77b4', '#ff7f0e', '#2ca02c', 'red', 'navyblue'), na.value='lightgray'),
+  scale_fill_manual(values=c('#1f77b4', '#ff7f0e', '#2ca02c', 'red', 'navyblue'), na.value='lightgray'),
+  theme_bw(),
+  theme(axis.text.x = element_text(angle=45, hjust=1),
+        panel.grid = element_blank(),
+        panel.background = element_blank(),
+        panel.border = element_blank(),
+        axis.line = element_line()))
+
+
+areaplot_style <- list(
+  scale_fill_manual(values=c('#2C3E95', '#4EAE48', '#397DB9'), na.value='lightgray'),
+  scale_color_manual(values=c('#2C3E95', '#4EAE48', '#397DB9'), na.value='lightgray'),
+  theme_bw(),
+  theme(axis.text.x = element_text(angle=45, hjust=1),
+        panel.grid = element_blank(),
+        panel.background = element_blank(),
+        panel.border = element_blank(),
+        axis.line = element_line()))
+```
+
+#### deeptools run
+
+```{bash, eval=FALSE}
+#!/bin/sh
+##cd /home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov/scripts/deeptools/RRP40Z1Z8clusters
+##sbatch --account=thj_common --mem=2g Guifen_raw_rel_RRP40Z1Z8cluster_all_classed_center_offset.sh
+. /home/schmidm/miniconda2/etc/profile.d/conda.sh
+conda activate deeptools3
+
+cluster_anno="/home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov/Singles_clusters/classed_clusters_summit.bed"
+#awk '{OFS="\t"}{if($6 == "+"){$2=($3-1025);$3+=1025;print $0}}' $cluster_anno > ${cluster_anno/.bed/_TESpm1025_plus.bed}
+#awk '{OFS="\t"}{if($6 == "-"){$3=($2+1025);$2-=1025;print $0}}' $cluster_anno > ${cluster_anno/.bed/_TESpm1025_minus.bed}
+
+outdir="RRP40Z8Z1clusters_all_classed_centerm1025p1025_raw_3pseq_out"
+mkdir $outdir
+sizeFactors="/home/schmidm/faststorage/Guifen/Lexogen_July_Sept_Nov/last_exon_sizeFactors.table"
+
+cat $sizeFactors | sed 1d | while read line;
+#tail -60 $sizeFactors | while read line;
+#grep siZCCHC8 $sizeFactors | grep ZFC3H1 | while read line;
+do
+  arr=($line)
+  fname=${arr[0]/./+}
+  month=${arr[1]}
+  echo "${month} ${fname}"
+
+  bw_plus="/home/schmidm/faststorage/Guifen/${arr[5]}/bigwig/${fname}_plus.bw"
+  bw_minus=${bw_plus//plus.bw/minus.bw}
+
+  name="raw_${month}_${fname}"
+  mat="${outdir}/${name}.gz"
+
+  echo $mat
+
+  python /home/schmidm/ms_tools/MS_Metagene_Tools/computeMatrixStranded.pyc scale-regions -Rp ${cluster_anno/.bed/_TESpm1025_plus.bed} -Rm ${cluster_anno/.bed/_TESpm1025_minus.bed} -Sp $bw_plus -Sm $bw_minus -o $mat -a 0 -b 0 --binSize=50 --regionBodyLength 2050 --missingDataAsZero --averageTypeBins sum --quiet
+done
+
+echo "ALL DONE"
+
+
+```
+
+
+## load to R 
+
+
+#### load metagene matrices
+
+```{r, eval=FALSE}
+path <- '/Volumes/GenomeDK/faststorage/Guifen/Lexogen_July_Sept_Nov/scripts/deeptools/RRP40Z1Z8clusters/RRP40Z8Z1clusters_all_classed_centerm1025p1025_raw_3pseq_out/'
+
+(fnames <- dir(path) %>% keep(grepl('^raw.*.gz', .) & !grepl('RBM7', .)))
+```
+
+
+```{r}
+load_mat <- function(fname){
+  simple_name = sub('.*raw_', '', fname) %>% sub('.gz', '', .) %>% str_split(., '_') %>% unlist
+  
+  series_name <- ifelse(length(simple_name) == 5, paste0('Novx', simple_name[5]), simple_name[1])
+  
+  RMetaTools::load_deeptoolsmatrix3(fname) %>%
+    dplyr::select(id, rel_pos, value) %>%
+    mutate(series=series_name, 
+           siRNA=simple_name[2], 
+           PAP=simple_name[3], 
+           fraction=simple_name[4])  %>%
+    mutate(rel_pos = rel_pos - 1000) %>%
+    separate(id, c('id', 'range', 'class'), sep=':') %>%
+    dplyr::select(-range)
+}
+```
+
+
+```{r, eval=FALSE}
+(df <- lapply(fnames, function(fname) load_mat(paste0(path,fname))) %>%
+         bind_rows)
+```
+
+
+#### load size factors
+
+```{r, eval=FALSE}
+(nfs <- read_tsv('../../data/last_exon_sizeFactors.table'))
+```
+
+```{r, eval=FALSE}
+(nfs %<>%
+  tidyr::separate(lib_name, c('siRNA', 'PAP', 'fraction', 'rep'), sep='_') %>%
+   mutate(series = ifelse(is.na(rep), series, paste0('Novx',rep)),
+          siRNA = sub('\\.', '\\+', siRNA)) %>%
+   dplyr::select(-bg_bam_dir, -lib, -rep))
+```
+
+#### normalize using size factors
+
+```{r, eval=FALSE}
+(df %<>% left_join(., nfs) %>%
+  mutate(value = value/geom_mean_sf,
+         class = factor(class, levels=c('PAXT', 'NEXT', 'BOTH')),
+         siRNA = factor(siRNA, levels=c('siGFP', 'siRRP40', 'siZCCHC8', 'siZFC3H1', 'siZCCHC8+ZFC3H1'))))
+```
+
+#### average replicates
+```{r}
+df %<>%
+  group_by(class, id, rel_pos, siRNA, PAP, fraction) %>%
+  summarize(log2_value = mean(log2(value+1)))
+```
+
+```{r, eval=FALSE}
+save(df, file = '../../data/cluster_3pseq_metagene.RData')
+```
+
+```{r, eval=TRUE}
+load('../../data/cluster_3pseq_metagene.RData')
+(df %<>%
+    ungroup %>%
+  mutate(PAP=factor(PAP), fraction=factor(fraction), id=factor(id)))
+```
+
+#### prepare for metagene
+
+
+```{r}
+ctrls <- df %>%
+  filter(siRNA == "siGFP") %>%
+  dplyr::rename(ctrl_log2_value = log2_value) %>%
+  ungroup %>%
+  dplyr::select(id, rel_pos, PAP, fraction, ctrl_log2_value)
+
+log2FCs <- df %>%
+  ungroup %>%
+  filter(siRNA != "siGFP") %>%
+  left_join(., ctrls) %>%
+  mutate(log2FC = log2_value - ctrl_log2_value,
+         siRNA = factor(siRNA, levels=c('siRRP40', 'siZCCHC8', 'siZFC3H1', 'siZCCHC8+ZFC3H1')))
+```
+
+
+## metagene profiles
+
+#### values
+
+```{r}
+(meta_values <- df %>%
+  filter(!is.na(class)) %>%
+  group_by(class, siRNA, PAP, fraction, rel_pos) %>%
+  do(tidy(t.test(.$log2_value))))
+```
+
+
+```{r cluster metagene profile normalized values 2classes}
+meta_values %>%
+  filter(class != 'BOTH') %>%
+  ggplot(. ,aes(x=rel_pos, y=estimate)) +
+  geom_line(aes(color=class)) +
+  geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class), alpha=.2)  +
+  facet_grid(fraction+PAP~siRNA, scales='free')  +
+  ylab('Average Log2 Signal') +
+  lineplot_style
+```
+
+```{r cluster metagene profile normalized values 3classes}
+meta_values %>%
+  ggplot(. ,aes(x=rel_pos, y=estimate)) +
+  geom_line(aes(color=class)) +
+  geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class), alpha=.2)  +
+  facet_grid(fraction+PAP~siRNA, scales='free')  +
+  ylab('Average Log2 Signal') +
+  lineplot_style
+```
+
+
+#### log2FCS
+
+```{r}
+(meta_log2FCs <- log2FCs %>%
+  group_by(class, siRNA, PAP, fraction, rel_pos) %>%
+  do(tidy(t.test(.$log2FC))))
+```
+
+
+```{r cluster metagene profile log2FC 2classes}
+meta_log2FCs %>%
+  filter(class != 'BOTH') %>%
+  ggplot(. ,aes(x=rel_pos, y=estimate)) +
+  geom_line(aes(color=class)) +
+  geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class), alpha=.2)  +
+  facet_grid(fraction+PAP~siRNA, scales='free')  +
+  ylab('Average Log2 Signal') +
+  lineplot_style
+```
+
+
+
+```{r cluster metagene profile log2FC 3classes}
+meta_log2FCs %>%
+  ggplot(. ,aes(x=rel_pos, y=estimate)) +
+  geom_line(aes(color=class)) +
+  geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class), alpha=.2)  +
+  facet_grid(fraction+PAP~siRNA, scales='free')  +
+  ylab('Average Log2 Signal') +
+  lineplot_style
+```
+
+```{r cluster metagene profile log2FC 3classes areas}
+meta_log2FCs %>%
+  filter(siRNA != 'siRRP40') %>%
+  ungroup %>%
+  mutate(siRNA = factor(siRNA, levels=c('siZCCHC8+ZFC3H1', 'siZCCHC8', 'siZFC3H1'))) %>%
+  ggplot(.) +
+  geom_ribbon(aes(x=rel_pos, ymin=0, ymax=estimate, fill=siRNA), alpha=.75) +
+  geom_line(aes(x=rel_pos, y=estimate, color=siRNA)) +
+  #geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class3), alpha=.2)  +
+  facet_grid(fraction+PAP~class, scales='free')  +
+  ylab('Average Log2 Signal') +
+  areaplot_style
+```
+
+
+
+## vs hexamer at end
+
+```{r}
+(hexamer_info <- read_tsv('../../data/cluster_with_class_and_hexameratTES.bed', col_names = c('chr', 'start', 'end', 'name', 'score', 'strand')) %>%
+   tidyr::separate(name, c('id', 'summit', 'class', 'hexamer'), sep=':'))
+
+```
+
+```{r}
+(meta_log2FCs <- left_join(log2FCs, dplyr::select(hexamer_info, id, hexamer)) %>%
+  group_by(class, hexamer, siRNA, PAP, fraction, rel_pos) %>%
+  do(tidy(t.test(.$log2FC))))
+```
+
+
+
+```{r cluster metagene profile log2FC 2classes with hexamer}
+meta_log2FCs %>%
+  filter(class != 'BOTH') %>%
+  ggplot(. ,aes(x=rel_pos, y=estimate)) +
+  geom_line(aes(color=class, linetype=hexamer)) +
+  facet_grid(fraction+PAP~siRNA+class, scales='free')  +
+  ylab('Average Log2 Signal') +
+  lineplot_style
+```
+
+
+```{r}
+sessionInfo()
+```
+
