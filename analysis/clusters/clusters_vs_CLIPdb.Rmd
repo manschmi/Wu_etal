@@ -1,0 +1,538 @@
+---
+title: 'CLIPdb on cluster classes'
+author: "Manfred Schmid"
+output: 
+  pdf_document:
+    toc: true 
+    toc_depth: 3
+    fig_caption: true
+editor_options: 
+  chunk_output_type: console
+---
+
+`r format(Sys.time(), "%d %B, %Y; %R")`
+
+## Setup
+
+
+```{r setup, echo=TRUE}
+knitr::opts_chunk$set(fig.width=12, fig.height=8, 
+                      fig.path='../../Figures/cluster_CLIPdb/', 
+                      dev='pdf', 
+                      echo=TRUE, warning=FALSE, message=FALSE, 
+                      error=TRUE)
+```
+
+
+```{r load packages, echo=T, warning=F, message=F}
+suppressWarnings(library('tidyverse'))
+suppressWarnings(library('magrittr'))
+suppressWarnings(library('knitr'))
+suppressWarnings(library('broom'))
+suppressWarnings(library('rtracklayer'))
+```
+
+
+
+## clusters new
+
+```{r}
+(clusters <- rtracklayer::import('../../data/clusters.bed'))
+```
+
+```{r}
+clusters$class <- sub('.*:', '', clusters$name)
+clusters$name <- sub(':BOTH|:NOT_SIG|:NEXT|:PAXT', '', clusters$name)
+clusters$summit <- as.integer(sub('.*:', '', clusters$name))+1
+#clusters$summit <- ifelse(strand(clusters)=="+", clusters$summit+1, clusters$summit)
+
+clusters
+```
+
+
+```{r}
+clusters_summitpm100 <- clusters[clusters$class != 'BOTH' & clusters$class != 'NOT_SIG',]
+
+start(clusters_summitpm100) <- clusters_summitpm100$summit - 100
+end(clusters_summitpm100) <- clusters_summitpm100$summit + 100
+
+
+clusters_summitpm100_plus <- clusters_summitpm100[strand(clusters_summitpm100)=='+',]
+
+clusters_summitpm100_minus <- clusters_summitpm100[strand(clusters_summitpm100)=='-',]
+```
+
+
+
+```{r}
+CLIPdb_bw_path <- '/Volumes/GenomeDK/THJ_common/faststorage/data/Human/CLIPdb/hg38_bw/'
+
+bw_fnames_base <- dir(CLIPdb_bw_path) %>% keep(grepl('plus.bw', .)) %>% sub('_plus.bw', '', .)
+```
+
+
+```{r}
+get_bw_sum <- function(bw, ranges){
+  
+  bw_file <- rtracklayer::BigWigFile(bw)
+
+  seqlevels(ranges, pruning.mode="coarse") <- seqnames(seqinfo(bw_file))
+  
+    values <- lapply(rtracklayer::import(bw_file, which=ranges, as = 'NumericList'),
+    sum) %>% unlist
+  
+  data.frame(cluster=ranges$name,
+             class=ranges$class,
+             value=values)
+}
+```
+
+```{r}
+get_data_for_CLIPdb <- function(bw_base){
+  print(paste0(' doing: ', bw_base))
+  plus_bw <- paste0(CLIPdb_bw_path,bw_base,'_plus.bw')
+  minus_bw <- paste0(CLIPdb_bw_path,bw_base,'_minus.bw')
+  ex_plus <- get_bw_sum(plus_bw, 
+                      clusters_summitpm100_plus)
+           
+
+  ex_minus <- get_bw_sum(minus_bw, 
+                      clusters_summitpm100_minus)
+
+  bind_rows(ex_plus,ex_minus) %>% tbl_df %>% mutate(experiment = bw_base)
+}
+
+```
+
+
+#### example WDR33
+
+
+```{r}
+(wdr33_base <- bw_fnames_base %>% keep(grepl('WDR33', .)))
+```
+
+```{r}
+wdr33_meta <- get_data_for_CLIPdb(wdr33_base)
+```
+
+
+```{r}
+ggplot(wdr33_meta, aes(x=class, y=log10(value+1), fill=class)) +
+  geom_violin()
+```
+
+
+```{r}
+wdr33_meta %>%
+  do(tidy(t.test(.$value~.$class)))
+```
+
+
+
+#### get all metavalues
+
+
+some bw files here are corrupt and useless, this can be inferred from their size:
+
+```{r}
+sapply(bw_fnames_base, function(base) file.size(paste0(CLIPdb_bw_path, base, '_plus.bw'))) %>%
+  sort
+```
+
+--> DGCR8_eCLIP and HNRNPU_eCLIP are extremely small and will be removed
+
+```{r}
+bw_fnames_base %<>%
+  keep(!grepl('DGCR8_eCLIP', .) & !grepl('HNRNPU_eCLIP', .))
+```
+
+
+```{r, eval=FALSE}
+(meta <- lapply(bw_fnames_base, get_data_for_CLIPdb) %>% bind_rows)
+```
+
+
+```{r, eval=FALSE}
+save(meta, file = '../../data/CLIPdb_summitpm200_sums.RData')
+```
+
+
+```{r}
+load('../../data/CLIPdb_summitpm200_sums.RData', verbose=T)
+meta
+```
+
+```{r}
+(meta_ttests <- meta %>%
+  group_by(experiment) %>%
+  do(tidy(t.test(.$value~.$class))))
+```
+
+
+```{r}
+meta_ttests %>% ungroup %>% arrange(p.value)
+```
+
+
+## subsets by annotation
+
+
+```{r}
+load('../../data/clusters_with_cat_and_geneanno.RData', verbose=T)
+overlaps_df
+```
+
+
+```{r}
+table(overlaps_df$gene_biotype)
+```
+
+
+#### not overlapping splice junctions
+
+splice junctions are relatively abundant in NEXT subset. This is a specific substrate class not relevant for the present manuscript. Since these bias for enrichment for splice factors, which are not relevant here, we focus on non-splice junction clusters.
+
+```{r}
+table(overlaps_df$junction_type)
+```
+
+
+```{r}
+nonSJ_ids <- overlaps_df %>%
+  filter(junction_type == 'none') %$% 
+  name %>%
+  sub(':.*', '', .)
+```
+
+
+```{r}
+nonSJ_meta <- filter(meta, sub(':.*', '', cluster) %in% nonSJ_ids)
+```
+
+
+
+```{r}
+(nonSJ_meta_wilcoxtests <- nonSJ_meta %>%
+  group_by(experiment) %>%
+  do(tidy(wilcox.test(.$value~.$class))))
+```
+
+```{r}
+(nonSJ_meta_ttests <- nonSJ_meta %>%
+  group_by(experiment) %>%
+  do(tidy(t.test(log2(.$value+1)~.$class))))
+```
+
+```{r}
+levels(nonSJ_meta$class)
+```
+
+```{r}
+nonSJ_meta_wilcoxtests %>% ungroup %>% arrange(p.value)
+```
+
+```{r}
+nonSJ_meta_ttests %>% ungroup %>% arrange(-estimate)
+```
+
+```{r}
+nonSJ_meta_ttests %>% ungroup %>% arrange(estimate)
+
+```
+
+```{r}
+nonSJ_meta_ttests %>% ungroup %>% arrange(p.value)
+```
+
+```{r}
+nonSJ_tt_wilcox_p <- nonSJ_meta_wilcoxtests %>%
+  dplyr::select(experiment, p.value) %>%
+  dplyr::rename(wilcox_p = p.value) %>%
+  ungroup %>%
+  mutate(wilcox_padj = p.adjust(wilcox_p)) %>%
+  left_join(nonSJ_meta_ttests, .)
+```
+
+```{r non SJ PAXT vs NEXT log2FC with wilcox p value coloring}
+ggplot(nonSJ_tt_wilcox_p,
+       aes(x=reorder(experiment, -estimate), y=-estimate, fill=-log10(wilcox_padj))) +
+         geom_bar(stat='identity', position='dodge') +
+  scale_fill_gradient(low='lightgray', high='firebrick4') +
+  theme(axis.text.x = element_text(angle=45, hjust=1, size=1),
+        panel.grid=element_blank(),
+        panel.background = element_blank())
+```
+
+
+```{r non SJ PAXT vs NEXT log2FC with wilcox p value coloring top hits}
+nonSJ_tt_wilcox_p %>%
+  filter(estimate < -.1) %>%
+  ggplot(.,
+       aes(x=reorder(experiment, -estimate), y=-estimate, fill=-log10(wilcox_padj))) +
+         geom_bar(stat='identity', position='dodge') +
+  scale_fill_gradient(low='lightgray', high='firebrick4') +
+  theme(axis.text.x = element_text(angle=45, hjust=1, size=6),
+        panel.background=element_blank(),
+        panel.grid=element_blank())
+```
+
+
+
+
+
+#### for only intergenic or unstable types
+
+```{r}
+intergenics <- overlaps_df %>%
+  filter(gene_biotype == 'intergenic' |
+           grepl('antisense', gene_biotype) |
+           grepl('lncRNA', gene_biotype) |
+           grepl('pseudogene', gene_biotype))
+```
+
+```{r}
+table(intergenics$gene_biotype)
+```
+
+```{r}
+intergenic_cluster_ids <- sub(':.*', '', intergenics$name)
+```
+
+
+```{r}
+intergenic_meta <- filter(meta, sub(':.*', '', cluster) %in% intergenic_cluster_ids)
+```
+
+
+
+```{r}
+(intergenic_meta_wilcoxtests <- intergenic_meta %>%
+  group_by(experiment) %>%
+  do(tidy(wilcox.test(.$value~.$class))))
+```
+
+```{r}
+(intergenic_meta_ttests <- intergenic_meta %>%
+  group_by(experiment) %>%
+  do(tidy(t.test(log2(.$value+1)~.$class))))
+```
+
+```{r}
+levels(intergenic_meta$class)
+```
+
+```{r}
+intergenic_meta_wilcoxtests %>% ungroup %>% arrange(p.value)
+```
+
+```{r}
+intergenic_meta_ttests %>% ungroup %>% arrange(-estimate)
+```
+
+```{r}
+intergenic_meta_ttests %>% ungroup %>% arrange(estimate)
+
+```
+
+```{r}
+intergenic_meta_ttests %>% ungroup %>% arrange(p.value)
+```
+
+```{r}
+intergenic_tt_wilcox_p <- intergenic_meta_wilcoxtests %>%
+  dplyr::select(experiment, p.value) %>%
+  dplyr::rename(wilcox_p = p.value) %>%
+  ungroup %>%
+  mutate(wilcox_padj = p.adjust(wilcox_p)) %>%
+  left_join(intergenic_meta_ttests, .)
+```
+
+```{r intergenic PAXT vs NEXT log2FC with wilcox p value coloring}
+ggplot(intergenic_tt_wilcox_p,
+       aes(x=reorder(experiment, -estimate), y=-estimate, fill=-log10(wilcox_padj))) +
+         geom_bar(stat='identity', position='dodge') +
+  scale_fill_gradient(low='lightgray', high='firebrick4') +
+  theme(axis.text.x = element_text(angle=45, hjust=1, size=1))
+```
+
+
+```{r intergenic PAXT vs NEXT log2FC with wilcox p value coloring top hits}
+intergenic_tt_wilcox_p %>%
+  filter(estimate < -.15) %>%
+  ggplot(.,
+       aes(x=reorder(experiment, -estimate), y=-estimate, fill=-log10(wilcox_padj))) +
+         geom_bar(stat='identity', position='dodge') +
+  scale_fill_gradient(low='lightgray', high='firebrick4') +
+  theme(axis.text.x = element_text(angle=45, hjust=1, size=6),
+        panel.background=element_blank(),
+        panel.grid=element_blank())
+```
+
+
+
+# metagene profiles
+
+```{r}
+get_bw_values <- function(bw, ranges){
+  
+  bw_file <- rtracklayer::BigWigFile(bw)
+
+  seqlevels(ranges, pruning.mode="coarse") <- seqnames(seqinfo(bw_file))
+  
+    values <- rtracklayer::import(bw_file, which=ranges, as = 'NumericList')
+  
+  df <- data.frame(as.matrix(values))
+  df$cluster <- ranges$name
+  df$class <- ranges$class
+  
+  df %<>%
+    gather(pos, value, -cluster, -class) %>%
+    mutate(pos = as.integer(sub('X','',pos)))
+  
+  tbl_df(df)
+}
+```
+
+
+```{r}
+get_data_for_CLIPdb_profile <- function(bw_base, plus_ranges, minus_ranges){
+  print(paste0(' doing: ', bw_base))
+  plus_bw <- paste0(CLIPdb_bw_path,bw_base,'_plus.bw')
+  minus_bw <- paste0(CLIPdb_bw_path,bw_base,'_minus.bw')
+  ex_plus <- get_bw_values(plus_bw, 
+                      plus_ranges)
+           
+
+  ex_minus <- get_bw_values(minus_bw, 
+                      minus_ranges)
+
+  bind_rows(ex_plus,ex_minus) %>%  mutate(experiment = bw_base)
+}
+
+```
+
+
+#### for top nonSJ hits
+
+```{r}
+(exp_sig <- nonSJ_tt_wilcox_p %>%
+  filter(estimate < -.1) %$% 
+  experiment)
+```
+
+
+```{r}
+clusters_summitpm1kb <- clusters[clusters$class != 'BOTH' & clusters$class != 'NOT_SIG' & sub(':.*', '', clusters$name) %in% nonSJ_ids,]
+
+start(clusters_summitpm1kb) <- clusters_summitpm1kb$summit - 1000
+end(clusters_summitpm1kb) <- clusters_summitpm1kb$summit + 1000
+
+
+clusters_summitpm1kb_plus <- clusters_summitpm1kb[strand(clusters_summitpm1kb)=='+',]
+
+clusters_summitpm1kb_minus <- clusters_summitpm1kb[strand(clusters_summitpm1kb)=='-',]
+```
+
+```{r}
+(meta_profiles <- lapply(exp_sig[1], function(exp) get_data_for_CLIPdb_profile(exp, clusters_summitpm1kb_plus, clusters_summitpm1kb_minus) %>%
+  mutate(pos = ifelse(grepl('^cp',cluster), pos-1001, 1001-pos)) %>%
+  group_by(pos, class, experiment) %>%
+  summarize(total_log_value=mean(log2(value+.001)))) %>% 
+   bind_rows)
+```
+
+
+```{r}
+meta_profile_avg <- meta_profiles %>%
+  mutate(pos = ifelse(grepl('^cp',cluster), pos-1001, 1001-pos)) %>%
+  group_by(pos, class, experiment) %>%
+  summarize(total_log_value=mean(log2(value+.001)))
+```
+
+```{r non SJ metagene profiles}
+ggplot(meta_profile_avg,
+       aes(x=pos, y=total_log_value, color=class)) +
+  geom_line() +
+  facet_wrap(~experiment)
+```
+
+
+#### for top hits intergenics
+
+```{r}
+(exp_sig <- intergenic_tt_wilcox_p %>%
+  filter(estimate < -.15) %$% 
+  experiment)
+```
+
+
+```{r}
+clusters_summitpm1kb <- clusters[clusters$class != 'BOTH' & clusters$class != 'NOT_SIG' & sub(':.*', '', clusters$name) %in% intergenic_cluster_ids,]
+
+start(clusters_summitpm1kb) <- clusters_summitpm1kb$summit - 1000
+end(clusters_summitpm1kb) <- clusters_summitpm1kb$summit + 1000
+
+
+clusters_summitpm1kb_plus <- clusters_summitpm1kb[strand(clusters_summitpm1kb)=='+',]
+
+clusters_summitpm1kb_minus <- clusters_summitpm1kb[strand(clusters_summitpm1kb)=='-',]
+```
+
+```{r}
+(meta_profiles <- lapply(exp_sig, function(exp) get_data_for_CLIPdb_profile(exp, clusters_summitpm1kb_plus, clusters_summitpm1kb_minus)) %>% bind_rows)
+```
+
+
+```{r}
+meta_profile_avg <- meta_profiles %>%
+  mutate(pos = ifelse(grepl('^cp',cluster), pos-1001, 1001-pos)) %>%
+  group_by(pos, class, experiment) %>%
+  summarize(total_log_value=mean(log2(value+.001)))
+```
+
+```{r}
+ggplot(meta_profile_avg,
+       aes(x=pos, y=total_log_value, color=class)) +
+  geom_line() +
+  facet_wrap(~experiment)
+```
+
+
+```{r}
+intergenics <- overlaps_df %>%
+  filter(gene_biotype == 'intergenic')
+```
+
+```{r}
+table(intergenics$gene_biotype)
+```
+
+```{r}
+intergenic_cluster_ids <- intergenics$name
+```
+
+```{r}
+inter_meta <- filter(meta_profiles, cluster %in% intergenic_cluster_ids)
+```
+
+
+```{r}
+inter_meta_profile_avg <- inter_meta %>%
+  mutate(pos = ifelse(grepl('^cp',cluster), pos-1001, 1001-pos)) %>%
+  group_by(pos, class, experiment) %>%
+  summarize(total_log_value=mean(log2(value+.001)))
+```
+
+```{r intergenic metagene profiles}
+ggplot(inter_meta_profile_avg,
+       aes(x=pos, y=total_log_value, color=class)) +
+  geom_line() +
+  facet_wrap(~experiment)
+```
+
+
+# sessionInfo
+```{r}
+sessionInfo()
+```
