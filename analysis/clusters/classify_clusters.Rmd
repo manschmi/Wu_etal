@@ -300,6 +300,29 @@ rtracklayer::export.bed(clusters,con = '../../data/clusters.bed')
 ```
 
 
+#### save cluster summit positions with class info in name
+```{r}
+classed_clusters <- clusters[clusters$class != 'NOT_SIG',]
+classed_clusters$summit <- as.integer(sub('.*:', '', classed_clusters$name))
+start(classed_clusters) -> classed_clusters$cluster_start 
+end(classed_clusters) -> classed_clusters$cluster_end
+
+seqlevelsStyle(classed_clusters) <- 'UCSC'
+start(classed_clusters) <- classed_clusters$summit
+end(classed_clusters) <- classed_clusters$summit
+
+classed_clusters$name <- paste0(sub(':.*', '', classed_clusters$name), ':',
+                                classed_clusters$cluster_start, '-',classed_clusters$cluster_end, ':', classed_clusters$class)
+                                
+classed_clusters
+```
+
+```{r}
+rtracklayer::export.bed(classed_clusters, '../../data/classed_clusters_summit.bed')
+```
+
+
+
 ## load clusters and annotation
 ```{r, eval=TRUE}
 (clusters <- rtracklayer::import('../../data/clusters.bed'))
