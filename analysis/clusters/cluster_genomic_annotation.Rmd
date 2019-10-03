@@ -1,0 +1,513 @@
+---
+title: 'Genomic annotations around cluster classes'
+author: "Manfred Schmid"
+output: 
+  pdf_document:
+    toc: true 
+    toc_depth: 3
+    fig_caption: true
+editor_options: 
+  chunk_output_type: console
+---
+
+`r format(Sys.time(), "%d %B, %Y; %R")`
+
+## Setup
+
+```{r setup, echo=TRUE}
+knitr::opts_chunk$set(fig.width=12, fig.height=8, 
+                      fig.path=paste0('../../Figures/cluster_class_annotation/'), 
+                      dev='pdf', 
+                      echo=TRUE, warning=FALSE, message=FALSE, 
+                      error=TRUE)
+```
+
+```{r load packages, echo=T, warning=F, message=F}
+suppressWarnings(library('tidyverse'))
+suppressWarnings(library('magrittr'))
+suppressWarnings(library('knitr'))
+suppressWarnings(library('broom'))
+suppressWarnings(library('AnnotationHub'))
+suppressWarnings(library('GenomicRanges'))
+```
+
+
+## load hg38 annotations
+
+```{r}
+hub <- AnnotationHub()
+hub <- subset(hub, hub$genome=='GRCh38') 
+hub <- subset(hub, hub$title=='Homo_sapiens.GRCh38.92.gtf')
+
+hub_name <- names(hub)
+gr <- hub[[hub_name[1]]]
+summary(gr)
+```
+
+```{r}
+head(gr)
+```
+
+--> OK, looks like a pretty comprehensive annotation with everything we need
+
+
+
+## prepare clusters and annotation
+
+#### genomic location bed files
+
+bed files
+```{r, eval=FALSE}
+bed_plus="/Volumes/GenomeDK/faststorage/Guifen/Lexogen_July_Sept_Nov/Singles_clusters/Singles_union_filtgm5_merged25_filtg20_with_center_plus.bed"
+bed_minus="/Volumes/GenomeDK/faststorage/Guifen/Lexogen_July_Sept_Nov/Singles_clusters/Singles_union_filtgm5_merged25_filtg20_with_center_minus.bed"
+
+plus_anno <- rtracklayer::import(bed_plus)
+minus_anno <- rtracklayer::import(bed_minus)
+
+(clusters <- c(plus_anno, minus_anno))
+```
+
+
+#### classification file
+```{r, eval=FALSE}
+load('../../data/cluster_classes.RData', verbose=T)
+cluster_classes
+```
+
+```{r, eval=FALSE}
+cluster_class_map <- cluster_classes$class
+names(cluster_class_map) <- cluster_classes$cluster
+```
+
+```{r, eval=FALSE}
+clusters$class <- cluster_class_map[clusters$name]
+clusters$name <- paste0(clusters$name, ':', clusters$class)
+```
+
+#### save this
+```{r, eval=FALSE}
+rtracklayer::export.bed(clusters,con = '../../data/clusters.bed')
+```
+
+
+## load clusters and annotation
+```{r, eval=TRUE}
+(clusters <- rtracklayer::import('../../data/clusters.bed'))
+```
+
+```{r}
+clusters$class <- sub('.*:', '', clusters$name)
+clusters$cluster <- sub(':.*', '', clusters$name)
+clusters$center <- sapply(clusters$name, function(n) as.integer(str_split(n, ':', simplify=T)[2]))
+clusters
+```
+
+```{r}
+(clusters_tbl <- data.frame(clusters) %>% 
+  tbl_df)
+```
+
+
+
+#### amount of genomic positions in the various categories
+
+total bp in clusters:
+```{r}
+(total_cluster_bps <- sum(clusters_tbl$width))
+```
+
+total bp per class
+
+```{r}
+clusters_tbl %>%
+  group_by(class) %>%
+  summarize(total_bp = sum(width)) %>%
+  mutate(freq_in_class = total_bp/total_cluster_bps)
+```
+
+
+#### size of clusters
+
+```{r}
+clusters_tbl %>%
+  group_by(class) %>%
+  do(tidy(summary(.$width)))
+```
+
+
+```{r cluster width violin boxplot}
+clusters_tbl %>%
+  ggplot(., aes(x=class, y=width, fill=class)) +
+  geom_violin() +
+  geom_boxplot(width=.2, fill='gray', outlier.shape=NA) +
+  theme_minimal() +
+  scale_y_log10() +
+  ylab('cluster width in bp')
+```
+
+
+
+## overlap with genome annotations
+
+```{r}
+cluster_overlaps <- function(clusters, annotations) {
+  cluster_overlaps <-
+    findOverlaps(query = clusters, subject = annotations) %>%
+    data.frame %>%
+    distinct(queryHits, .keep_all = TRUE)
+  
+  subject_hits <- annotations[cluster_overlaps$subjectHits, ]
+  query_hits <- clusters[cluster_overlaps$queryHits, ]
+  
+  bind_cols(data.frame(query_hits), data.frame(subject_hits)) %>%
+    tbl_df
+}
+```
+
+
+```{r}
+barplot_style <- list(
+  scale_fill_manual(values=c('lightgray', '#2ca02c', '#1f77b4', '#ff7f0e')),
+  theme_bw(),
+  theme(axis.text.x = element_text(angle=45, hjust=1),
+        panel.grid = element_blank(), 
+        panel.background = element_blank(), 
+        panel.border = element_blank(), 
+        axis.line = element_line()))
+```
+
+
+## overlaps with genes
+
+--> ups annotation hub works with chr names without chr prefix
+
+```{r}
+seqlevels(clusters) <- mapSeqlevels(seqlevels(clusters), "NCBI")
+```
+
+
+```{r}
+genes <- gr[gr$type=='gene',]
+```
+
+```{r}
+(gene_overlaps_df <- cluster_overlaps(clusters, genes)) 
+```
+
+
+#### non-genic clusters
+```{r}
+intergenic_clusters <- clusters[!(clusters$name %in% gene_overlaps_df$name),]
+```
+
+```{r}
+(genic_vs_intergenic_df <- bind_rows(gene_overlaps_df, 
+                                    data.frame(intergenic_clusters) %>% 
+                                      mutate(gene_biotype='intergenic')) %>%
+  group_by(class, gene_biotype) %>%
+  summarize(cnt = n()) %>%
+  group_by(gene_biotype) %>%
+  mutate(freq = cnt/sum(cnt)) %>%
+  ungroup %>%
+  mutate(class = factor(class, levels=c('NOT_SIG', 'BOTH', 'PAXT', 'NEXT'))))
+```
+
+```{r}
+(total_clusters_per_biotype <- genic_vs_intergenic_df %>%
+   group_by(gene_biotype) %>%
+   summarize(cnt = sum(cnt)) %>%
+   arrange(-cnt))
+```
+
+
+```{r}
+genic_vs_intergenic_df %<>%
+  mutate(gene_biotype = factor(gene_biotype, levels=total_clusters_per_biotype$gene_biotype))
+```
+
+```{r overlaps counts only annotated vs intergenic all clusters}
+ggplot(genic_vs_intergenic_df, aes(x=gene_biotype, y=cnt, fill=class)) +
+  geom_bar(stat = 'identity') +
+  barplot_style
+```
+
+
+```{r overlaps per gene biotype vs intergenic freqs stacked major cats g50}
+major_cats <- filter(total_clusters_per_biotype, cnt > 50) %$% gene_biotype
+
+genic_vs_intergenic_df %>%
+  filter(gene_biotype %in% major_cats) %>%
+  ggplot(., aes(x=gene_biotype, y=freq, fill=class)) +
+  geom_bar(stat='identity') +
+  barplot_style
+```
+
+
+```{r overlaps per gene biotype vs intergenic freqs stacked major cats g500}
+major_cats <- filter(total_clusters_per_biotype, cnt > 500) %$% gene_biotype
+
+genic_vs_intergenic_df %>%
+  filter(gene_biotype %in% major_cats) %>%
+  ggplot(., aes(x=gene_biotype, y=freq, fill=class)) +
+  geom_bar(stat='identity') +
+  barplot_style
+```
+
+
+```{r overlaps per gene biotype vs intergenic freqs stacked major cats g500 zoom}
+genic_vs_intergenic_df %>%
+  filter(gene_biotype %in% major_cats) %>%
+  ggplot(., aes(x=gene_biotype, y=freq, fill=class)) +
+  geom_bar(stat='identity') +
+  barplot_style +
+  coord_cartesian(ylim=c(0,.4))
+```
+
+
+```{r overlaps per gene biotype vs intergenic freqs stacked major cats g500 faceted}
+genic_vs_intergenic_df %>%
+  filter(gene_biotype %in% major_cats, class != 'NOT_SIG') %>%
+  ggplot(., aes(x=gene_biotype, y=freq, fill=gene_biotype)) +
+  geom_bar(stat='identity') +
+  facet_grid(.~class) +
+  scale_fill_brewer(palette = 'Set2') +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=45, hjust=1),
+        panel.grid=element_blank())
+```
+
+
+## Exon vs Intron information
+
+Define exon from same annotation
+```{r}
+exons <- gr[gr$type=='exon',]
+```
+
+
+Introns are simply everything inside genes but not exons
+```{r}
+introns <- setdiff(genes, exons)
+```
+
+
+#### overlaps with exons
+
+```{r}
+(exons_overlaps_df <- cluster_overlaps(clusters, exons) %>%
+    mutate(exon_or_intron='exon') %>%
+   dplyr::select(name, exon_or_intron))
+```
+
+
+
+#### intron clusters 
+
+cannot be exon
+```{r}
+nonexon_clusters <- clusters[!(clusters$name %in% exons_overlaps_df$name),]
+
+(introns_overlaps_df <- cluster_overlaps(nonexon_clusters, introns) %>%
+    mutate(exon_or_intron='intron') %>%
+   dplyr::select(name, exon_or_intron))
+```
+
+```{r}
+exon_or_intron <- bind_rows(exons_overlaps_df, introns_overlaps_df)
+```
+
+
+```{r}
+exon_intron_overlaps_df <- left_join(gene_overlaps_df, exon_or_intron) %>%
+  mutate(exon_or_intron_biotype = paste0(gene_biotype, '_', exon_or_intron))
+```
+
+
+```{r overlaps per gene biotype vs intergenic freqs stacked major cats g500 with exon intron information}
+exon_intron_overlaps_df %>%
+  group_by(class, gene_biotype, exon_or_intron_biotype) %>%
+  summarize(cnt = n()) %>%
+  group_by(gene_biotype, exon_or_intron_biotype) %>%
+  mutate(freq = cnt/sum(cnt)) %>%
+  filter(gene_biotype %in% major_cats) %>%
+  ungroup %>%
+  mutate(gene_biotype = factor(exon_or_intron_biotype, levels=major_cats),
+         class = factor(class, levels=c('NOT_SIG', 'BOTH', 'PAXT', 'NEXT'))) %>%
+  ggplot(., aes(x=exon_or_intron_biotype, y=freq, fill=class)) +
+  geom_bar(stat='identity') +
+  theme_minimal() +
+  scale_fill_manual(values = c('lightgray', 'lightgreen', 'red', 'darkblue')) +
+  theme(axis.text.x = element_text(angle=45, hjust=1),
+        panel.grid = element_blank())
+```
+
+--> somewhat surprisingly, protein-coding exons contain as many sig clusters as introns!
+
+
+## overlap splice junctions
+
+#### 5' splice site proximal clusters
+
+5'ss are 3' ends of exons but need to remove 3'ends of last exons
+simply remove all transcripts 3' ends overlapping clusters
+
+```{r}
+transcripts <- gr[gr$type=='transcript',]
+```
+
+remove TES +/- 200bp
+```{r}
+tr_TES_pm200bp <- transcripts
+start(tr_TES_pm200bp) <-  ifelse(strand(tr_TES_pm200bp) == '+', end(tr_TES_pm200bp)-200, start(tr_TES_pm200bp)-200)
+end(tr_TES_pm200bp) = start(tr_TES_pm200bp)+400
+tr_TES_pm200bp$type <- 'TES_pm200bp'
+```
+
+```{r}
+TES_clusters <- findOverlaps(clusters, tr_TES_pm200bp)
+
+non_TES_clusters <- clusters[-unique(queryHits(TES_clusters)),]
+```
+
+make 5'ss (splice acceptor SD) annotation (ie 3' ends of exons but includes transcript 3' end)
+```{r}
+exonend_pm20bp <- exons
+start(exonend_pm20bp) <-  ifelse(strand(exonend_pm20bp) == '+', end(exonend_pm20bp)-20, start(exonend_pm20bp)-20)
+end(exonend_pm20bp) = start(exonend_pm20bp)+40
+exonend_pm20bp$type <- 'exon3pend_pm20bp'
+```
+
+```{r}
+(SD_overlaps_df <- cluster_overlaps(non_TES_clusters, exonend_pm20bp) %>%
+    mutate(overlaps='SD'))
+```
+
+```{r}
+table(SD_overlaps_df$class)
+```
+
+
+```{r}
+table(SD_overlaps_df$class)/table(clusters$class)
+```
+
+
+--> not sig are most frequent, ie no clear enrichment for 5'ss
+
+
+#### clusters very close to 3' splice site
+
+make 3'ss (splice acceptor SA) annotation
+```{r}
+SA_m20bp <- exons[exons$exon_number != '1',]
+start(SA_m20bp) <-  ifelse(strand(SA_m20bp) == '+', start(SA_m20bp)-20, end(SA_m20bp)-20)
+end(SA_m20bp) = start(SA_m20bp)+20
+SA_m20bp$type <- 'SA'
+```
+
+```{r}
+(SA_overlaps_df <- cluster_overlaps(clusters, SA_m20bp) %>%
+    mutate(overlaps='SA'))
+```
+
+
+```{r}
+table(SA_overlaps_df$class)
+```
+
+```{r}
+table(SA_overlaps_df$class)/table(clusters$class)
+```
+--> clear trend is in favor of SA overlapping clusters being NEXT class, whereas PAXT are actually depleted
+
+
+#### width of clusters very close to 3' splice site
+
+--> width of SA overlaps
+
+```{r width of SA overlapping clusters}
+SA_overlaps_df %>%
+  ggplot(., aes(x=class, y=width, fill=class)) +
+  geom_violin() +
+  geom_boxplot(width=.2, fill='gray', outlier.shape=NA) +
+  theme_minimal() +
+  scale_y_log10() +
+  ylab('cluster width in bp')
+```
+
+```{r width of SA vs nonSA overlapping clusters}
+clusters_tbl %>%
+  mutate(SA_overlap = ifelse(name %in% SA_overlaps_df$name, 'SA', 'notSA')) %>%
+  ggplot(., aes(x=class, y=width, fill=class)) +
+  geom_violin() +
+  geom_boxplot(width=.2, fill='gray', outlier.shape=NA) +
+  facet_grid(.~SA_overlap) +
+  theme_minimal() +
+  scale_y_log10() +
+  ylab('cluster width in bp')
+```
+
+
+summary of width all
+```{r}
+clusters_tbl %>%
+  group_by(class) %>%
+  do(tidy(summary(.$width)))
+```
+
+```{r}
+clusters_tbl %>%
+  mutate(SA_overlap = ifelse(name %in% SA_overlaps_df$name, 'SA', 'notSA')) %>%
+  group_by(class, SA_overlap) %>%
+  do(tidy(summary(.$width)))
+```
+
+
+## save all annotation info
+
+```{r}
+(overlaps_df <- exon_intron_overlaps_df %>%
+  mutate(junction_type = case_when(name %in% SA_overlaps_df$name ~ 'SA',
+                                   name %in% SD_overlaps_df$name ~ 'SD',
+                                   TRUE ~ 'none')) %>%
+  bind_rows(., 
+            data.frame(intergenic_clusters) %>% 
+              mutate(gene_biotype='intergenic',
+                     exon_or_intron_biotype='intergenic',
+                     junction_type='none')))
+```
+
+
+```{r}
+overlaps_df %>%
+  group_by(exon_or_intron_biotype, junction_type, class) %>%
+  summarise(cnt = n()) %>%
+  spread(class, cnt) %>%
+  arrange(-NEXT) %>%
+  kable
+```
+
+
+#### all info still there?
+
+```{r}
+table(clusters$class)
+```
+
+```{r}
+table(overlaps_df$class)
+```
+
+--> OK
+
+#### save all clusters with annotation info
+```{r}
+save(overlaps_df, file = '../../data/clusters_with_cat_and_geneanno.RData')
+```
+
+
+
+## session info
+```{r}
+sessionInfo()
+```
