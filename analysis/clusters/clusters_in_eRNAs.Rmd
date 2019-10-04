@@ -1,0 +1,301 @@
+---
+title: 'Clusters within eRNA'
+author: "Manfred Schmid"
+output: 
+  pdf_document:
+    toc: true 
+    toc_depth: 3
+    fig_caption: true
+---
+
+`r format(Sys.time(), "%d %B, %Y; %R")`
+
+## Setup
+
+```{r setup, echo=TRUE}
+knitr::opts_chunk$set(fig.width=12, fig.height=8, 
+                      fig.path=paste0('../../Figures/clusters_in_eRNA'), 
+                      dev='pdf', 
+                      echo=TRUE, warning=FALSE, message=FALSE, 
+                      error=TRUE)
+```
+
+```{r load packages, echo=T, warning=F, message=F}
+suppressWarnings(library('tidyverse'))
+suppressWarnings(library('magrittr'))
+suppressWarnings(library('knitr'))
+suppressWarnings(library('broom'))
+suppressWarnings(library('GenomicRanges'))
+suppressWarnings(library('rtracklayer'))
+```
+
+
+#### clusters
+
+
+```{r, eval=TRUE}
+(clusters <- rtracklayer::import('../../data/clusters.bed'))
+```
+
+
+#### eRNAs
+
+```{r, eval=TRUE}
+(eRNAs <- rtracklayer::import('/Users/au220280/Documents/genomewide_datasets/annotations/hg38/Chen_etal/Chen_eRNA_TSSs_uniq_hg38.bed'))
+```
+
+```{r}
+end(eRNAs) <- ifelse(strand(eRNAs)=='+', start(eRNAs)+4999, end(eRNAs))
+start(eRNAs) <- ifelse(strand(eRNAs)=='+', start(eRNAs), start(eRNAs)-4999)
+table(width(eRNAs))
+```
+
+
+```{r}
+eRNA_cluster_overlaps <- findOverlaps(GRanges(eRNAs), clusters)
+
+clusters_in_eRNA <- clusters[unique(subjectHits(eRNA_cluster_overlaps)),]
+```
+
+
+```{r}
+rtracklayer::export(clusters_in_eRNA, '../../data/clusters_in_eRNA.bed')
+```
+
+```{r}
+clusters_in_eRNA %>%
+  data.frame %>%
+  tbl_df %>%
+  separate(name, c('cluster', 'center', 'class'), sep=':') %$%
+  class %>%
+  table
+```
+
+
+```{r}
+clusters_in_eRNA_ids <- sub(':.*', '', clusters_in_eRNA$name)
+```
+
+
+
+## metagene
+
+```{r}
+load('../../data/cluster_metagene_3pseq.RData', verbose=T)
+avg_meta_tbl
+```
+
+```{r}
+avg_meta_tbl %<>% ungroup %>% mutate(cluster = factor(cluster))
+```
+
+```{r}
+(eRNA_meta_tbl <- filter(avg_meta_tbl, cluster %in% clusters_in_eRNA_ids))
+```
+
+```{r}
+table(eRNA_meta_tbl$class)
+```
+
+
+```{r}
+meta_values <- avg_meta_tbl %>%
+  mutate(log2_value = log2(value+1)) %>%
+  group_by(siRNA, PAP, fraction, class, rel_pos) %>%
+  do(tidy(t.test(.$log2_value))) %>%
+  ungroup %>%
+  mutate(siRNA = factor(siRNA, levels=c('siGFP', 'siRRP40', 'siZCCHC8', 'siZFC3H1', 'siZCCHC8+ZFC3H1')),
+         class = factor(class, levels=c('PAXT', 'NEXT', 'BOTH')))
+```
+
+
+```{r}
+lineplot_style <- list(
+  scale_color_manual(values=c('#1f77b4', '#ff7f0e', '#2ca02c', 'navyblue', 'red'), na.value='lightgray'),
+  scale_fill_manual(values=c('#1f77b4', '#ff7f0e', '#2ca02c', 'navyblue', 'red'), na.value='lightgray'),
+  theme_bw(),
+  theme(axis.text.x = element_text(angle=45, hjust=1, size=12, color='black'),
+        axis.text.y = element_text(size=12, color='black'),
+        panel.grid = element_blank(),
+        panel.background = element_blank(),
+        panel.border = element_blank(),
+        axis.line = element_line()))
+```
+
+
+```{r eRNA cluster metagene profile normalized values 2classes}
+meta_values %>%
+  filter(class != 'BOTH', class != 'NOT_SIG') %>%
+  ggplot(. ,aes(x=rel_pos, y=estimate)) +
+  geom_line(aes(color=class)) +
+  geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class), alpha=.2)  +
+  facet_grid(fraction+PAP~siRNA, scales='free')  +
+  ylab('Average Log2 Signal') +
+  lineplot_style
+```
+
+
+```{r eRNAcluster metagene profile normalized values 3classes}
+meta_values %>%
+  ggplot(. ,aes(x=rel_pos, y=estimate)) +
+  geom_line(aes(color=class)) +
+  geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class), alpha=.2)  +
+  facet_grid(fraction+PAP~siRNA, scales='free')  +
+  ylab('Average Log2 Signal') +
+  lineplot_style
+```
+
+
+##  log2FC normalized values rel control
+
+```{r}
+(avg_spread <- avg_meta_tbl %>% spread(siRNA, value))
+```
+
+
+```{r}
+log2FC_spread <- avg_spread 
+
+log2FC_spread$siRRP40 <- log2((avg_spread$siRRP40+1)/(avg_spread$siGFP+1))
+log2FC_spread$siZCCHC8 <- log2((avg_spread$siZCCHC8+1)/(avg_spread$siGFP+1))
+log2FC_spread$siZFC3H1 <- log2((avg_spread$siZFC3H1+1)/(avg_spread$siGFP+1))
+log2FC_spread$`siZCCHC8+ZFC3H1` <- log2((avg_spread$`siZCCHC8+ZFC3H1`+1)/(avg_spread$siGFP+1))
+
+log2FC <- log2FC_spread %>%
+    ungroup %>%
+  dplyr::select(-siGFP) %>%
+  gather(siRNA, log2_ratio, -class, -cluster, -rel_pos, -fraction, -PAP)
+```
+
+
+
+```{r}
+meta_log2FC <- log2FC %>%
+    group_by(class, fraction, PAP, siRNA, rel_pos) %>%
+    do(tidy(t.test(.$log2_ratio))) %>%
+  ungroup %>%
+  mutate(siRNA = factor(siRNA, levels=c('siRRP40', 'siZCCHC8', 'siZFC3H1', 'siZCCHC8+ZFC3H1')),
+         class = factor(class, levels=c('PAXT', 'NEXT', 'BOTH', 'NOT_SIG')))
+```
+
+
+#### metagene LFC profiles
+
+
+```{r eRNA cluster metagene profile LFC 2classes}
+meta_log2FC %>%
+  filter(class != 'BOTH', class != 'NOT_SIG') %>%
+  ggplot(. ,aes(x=rel_pos, y=estimate)) +
+  geom_line(aes(color=class)) +
+  geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class), alpha=.2)  +
+  facet_grid(fraction+PAP~siRNA, scales='free')  +
+  ylab('Average Log2 Signal') +
+  lineplot_style
+```
+
+
+
+
+#### only intergenic eRNAs
+
+
+## load hg38 annotations
+
+```{r}
+suppressWarnings(library('AnnotationHub'))
+hub <- AnnotationHub()
+hub <- subset(hub, hub$genome=='GRCh38') 
+hub <- subset(hub, hub$title=='Homo_sapiens.GRCh38.92.gtf')
+
+hub_name <- names(hub)
+gr <- hub[[hub_name[1]]]
+summary(gr)
+```
+
+```{r}
+head(gr)
+```
+
+
+
+```{r}
+genes <- gr[gr$type == 'gene',]
+seqlevelsStyle(genes) <- 'UCSC'
+```
+
+```{r}
+eRNA_cluster_overlaps <- findOverlaps(clusters_in_eRNA, genes)
+
+intergenic_clusters_in_eRNA <- clusters_in_eRNA[-queryHits(eRNA_cluster_overlaps),]
+```
+
+```{r}
+clusters_in_eRNA %>%
+  data.frame %>%
+  tbl_df %>%
+  separate(name, c('cluster', 'center', 'class'), sep=':') %$%
+  class %>%
+  table
+```
+
+
+```{r}
+intergenic_clusters_in_eRNA %>%
+  data.frame %>%
+  tbl_df %>%
+  separate(name, c('cluster', 'center', 'class'), sep=':') %$%
+  class %>%
+  table
+```
+
+
+```{r}
+intergenic_clusters_in_eRNA_ids <- sub(':.*', '', intergenic_clusters_in_eRNA$name)
+```
+
+
+
+```{r}
+meta_log2FC <- log2FC %>%
+  filter(cluster %in% intergenic_clusters_in_eRNA_ids) %>%
+    group_by(class, fraction, PAP, siRNA, rel_pos) %>%
+    do(tidy(t.test(.$log2_ratio))) %>%
+  ungroup %>%
+  mutate(siRNA = factor(siRNA, levels=c('siRRP40', 'siZCCHC8', 'siZFC3H1', 'siZCCHC8+ZFC3H1')),
+         class = factor(class, levels=c('PAXT', 'NEXT', 'BOTH', 'NOT_SIG')))
+```
+
+
+#### metagene LFC profiles
+
+
+```{r intergenic eRNA cluster metagene profile LFC 2classes}
+meta_log2FC %>%
+  filter(class != 'BOTH', class != 'NOT_SIG') %>%
+  ggplot(. ,aes(x=rel_pos, y=estimate)) +
+  geom_line(aes(color=class)) +
+  geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class), alpha=.2)  +
+  facet_grid(fraction+PAP~siRNA, scales='free')  +
+  ylab('Average Log2 Signal') +
+  lineplot_style
+```
+
+
+```{r intergenic eRNA cluster metagene profile LFC 3classes}
+meta_log2FC %>%
+  ggplot(. ,aes(x=rel_pos, y=estimate)) +
+  geom_line(aes(color=class)) +
+  geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class), alpha=.2)  +
+  facet_grid(fraction+PAP~siRNA, scales='free')  +
+  ylab('Average Log2 Signal') +
+  lineplot_style
+```
+
+
+# sessionInfo
+```{r}
+sessionInfo()
+```
+
+
+
