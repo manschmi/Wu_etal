@@ -12,7 +12,12 @@
 * analysis/clusters/aggregate_3p_signals_and_DESeq.Rmd
 * analysis/clusters/classify_clusters.Rmd
 * analysis/clusters/cluster_3endseq_metagene.Rmd
+* analysis/clusters/cluster_genomic_annotation.Rmd
 * analysis/clusters/cluster_motifs.Rmd
+* analysis/clusters/clusters_in_intron1.Rmd
+* analysis/clusters/clusters_in_eRNAs.Rmd
+* analysis/clusters/clusters_vs_CLIPdb.Rmd
+* analysis/clusters/cluster_pAstatus.Rmd
 
 
 ### Details:
@@ -42,13 +47,30 @@ Metagene of 3'end seq data around PROMPT TES.
 Hexamer and nucleotides at PROMPT TSS and in region TSS to +5kb
 
 #### aggregate_3p_signals_and_DESeq.Rmd
-Aggregate 3'end signals into clusters and DESeq of clusters for classification, includes PCA plots and normalization fo cluster counts.
+Aggregate 3'end signals into clusters. Add summit position within each cluster as extra info. Count sifnal in clusters in all libraries and do DESeq of clusters for classification, includes PCA plots and normalization fo cluster counts.
 
 #### classify_clusters.Rmd
-Classify clusters as NEXT, PAXT, NEXT+PAXT or not sig. Violin plots of normalized counts for each group and total coverage and signals in the various groups.
+Classify clusters as NEXT, PAXT, NEXT+PAXT or not sig. 
+Violin plots of normalized counts for each group and total coverage and signals in the various groups.
+Save annotations as bed file, including a file for cluster summit positions.
 
 #### cluster_3endseq_metagene.Rmd
 3'end seq data metagene relative to cluster summit.
 
+#### clusters_in_intron1.Rmd
+3'end seq data metagene relative to cluster summit for subset of clusters in intron1.
+
+#### clusters_in_eRNAs.Rmd
+3'end seq data metagene relative to cluster summit for subset of clusters in eRNA regions.
+
+#### cluster_genomic_annotation.Rmd
+Intersect cluster positions with Gencode annotations.
+
 #### cluster_motifs.Rmd
 Hexamer and nucleotides at around cluster summit.
+
+#### clusters_vs_CLIPdb.Rmd
+NEXT vs PAXT cluster querying against CLIP data from CLIPdb.
+
+#### cluster_pAstatus.Rmd
+pA status of clusters.
