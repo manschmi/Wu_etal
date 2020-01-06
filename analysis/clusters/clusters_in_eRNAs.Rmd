@@ -129,7 +129,7 @@ meta_values %>%
   ggplot(. ,aes(x=rel_pos, y=estimate)) +
   geom_line(aes(color=class)) +
   geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class), alpha=.2)  +
-  facet_grid(fraction+PAP~siRNA, scales='free')  +
+  facet_grid(fraction+PAP~siRNA)  +
   ylab('Average Log2 Signal') +
   lineplot_style
 ```
@@ -140,7 +140,7 @@ meta_values %>%
   ggplot(. ,aes(x=rel_pos, y=estimate)) +
   geom_line(aes(color=class)) +
   geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class), alpha=.2)  +
-  facet_grid(fraction+PAP~siRNA, scales='free')  +
+  facet_grid(fraction+PAP~siRNA)  +
   ylab('Average Log2 Signal') +
   lineplot_style
 ```
@@ -188,7 +188,7 @@ meta_log2FC %>%
   ggplot(. ,aes(x=rel_pos, y=estimate)) +
   geom_line(aes(color=class)) +
   geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class), alpha=.2)  +
-  facet_grid(fraction+PAP~siRNA, scales='free')  +
+  facet_grid(fraction+PAP~siRNA)  +
   ylab('Average Log2 Signal') +
   lineplot_style
 ```
@@ -275,7 +275,7 @@ meta_log2FC %>%
   ggplot(. ,aes(x=rel_pos, y=estimate)) +
   geom_line(aes(color=class)) +
   geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class), alpha=.2)  +
-  facet_grid(fraction+PAP~siRNA, scales='free')  +
+  facet_grid(fraction+PAP~siRNA)  +
   ylab('Average Log2 Signal') +
   lineplot_style
 ```
@@ -286,7 +286,7 @@ meta_log2FC %>%
   ggplot(. ,aes(x=rel_pos, y=estimate)) +
   geom_line(aes(color=class)) +
   geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class), alpha=.2)  +
-  facet_grid(fraction+PAP~siRNA, scales='free')  +
+  facet_grid(fraction+PAP~siRNA)  +
   ylab('Average Log2 Signal') +
   lineplot_style
 ```
