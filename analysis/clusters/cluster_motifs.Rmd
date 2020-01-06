@@ -173,6 +173,31 @@ tidy_pattern_df(roi,
 ```
 
 
+#### nucleotides
+
+```{r nucleotides split}
+tidy_pattern_df(roi, 
+                roi_pm100_seq, 
+                patterns = c('A', 'C', 'G', 'T'), 
+                offset) %>%
+  tidy_pattern_plot
+```
+
+
+#### dinucleotides
+
+```{r dinucleotides split}
+tidy_pattern_df(roi, 
+                roi_pm100_seq, 
+                patterns = c('AA', 'AC', 'AG', 'AT',
+                             'CA', 'CC', 'CG', 'CT',
+                             'GA', 'GC', 'GG', 'GT',
+                             'TA', 'TC', 'TG', 'TT'), 
+                offset) %>%
+  tidy_pattern_plot
+```
+
+
 # subclass of clusters with and without hexamers
 
 
@@ -213,6 +238,67 @@ roi
 rtracklayer::export.bed(roi, '../../data/cluster_with_class_and_hexameratTES.bed')
 ```
 
+
+
+##hexamer for all clusters
+
+```{r}
+offset <- 31
+```
+
+
+```{r}
+roi <- clusters
+roi$cluster_start <- start(roi)
+roi$cluster_end <- end(roi)
+
+start(roi) <- ifelse(strand(roi)=="+",roi$summit-offset+1,roi$summit-offset-1)
+end(roi) <-  ifelse(strand(roi)=="+",roi$summit+offset+1,roi$summit+offset-1)
+```
+
+```{r}
+roi_pm31_seq <- getSeq(genome, roi)
+```
+
+
+```{r}
+awtaaa_df <- getPatternOccurrenceList(regionsSeq = roi_pm31_seq, patterns = c('AATAAA', 'ATTAAA')) %>% bind_rows
+
+```
+
+
+
+```{r}
+offset <- 31
+hexamer_containing <- awtaaa_df %>%
+  mutate(position = position - offset) %>%
+  filter(position > -30, position < -10) %>%
+  distinct(sequence) %$%
+  sequence
+```
+
+```{r}
+roi$hexamer_at_TES <- 'no_TES_hexamer'
+roi$hexamer_at_TES[hexamer_containing] <- 'TES_hexamer'
+```
+
+```{r}
+roi %>%
+  data.frame %>%
+  group_by(hexamer_at_TES, class) %>%
+  summarize(cnt=n()) %>%
+  ungroup %>%
+  spread(hexamer_at_TES, cnt) %>%
+  mutate(hexamer_freq = TES_hexamer/(no_TES_hexamer+TES_hexamer))
+```
+
+```{r}
+roi$name <- paste0(roi$name, ':', roi$class, ':', roi$hexamer_at_TES)
+start(roi) <- roi$cluster_start
+end(roi) <- roi$cluster_end
+roi
+rtracklayer::export.bed(roi, '../../data/cluster_with_all_classes_and_hexameratTES.bed')
+```
 
 # sessionInfo
 ```{r}
