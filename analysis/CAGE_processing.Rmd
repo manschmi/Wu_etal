@@ -181,7 +181,63 @@ wc -l $bg_merged_dir/all_merged_tpms_g01_clustersd20_plus.bedgraph
 wc -l $bg_merged_dir/all_merged_tpms_g01_clustersd20_minus.bedgraph
 #51802
 
-awk '{if(NR==FNR){strand="+";cluster_name="MS_CAGEcluster_plus"NR;}else{strand="-";cluster_name="MS_CAGEcluster_minus"FNR;};print $1"\t"$2"\t"$3"\t"cluster_name"\t"int($4)"\t"strand}' $bg_merged_dir/all_merged_tpms_g1_clustersd20_plus.bedgraph $bg_merged_dir/all_merged_tpms_g1_clustersd20_minus.bedgraph  | sort -k1,1 -k2,2n > $bg_merged_dir/CAGE_clustersd20.bed
+awk '{if(NR==FNR){strand="+";cluster_name="MS_CAGEcluster_plus"NR;}else{strand="-";cluster_name="MS_CAGEcluster_minus"FNR;};print $1"\t"$2"\t"$3"\t"cluster_name"\t"$4"\t"strand}' $bg_merged_dir/all_merged_tpms_g1_clustersd20_plus.bedgraph $bg_merged_dir/all_merged_tpms_g1_clustersd20_minus.bedgraph  | sort -k1,1 -k2,2n > $bg_merged_dir/CAGE_clustersd20.bed
 
-awk '{if(NR==FNR){strand="+";cluster_name="MS_CAGEcluster_plus"NR;}else{strand="-";cluster_name="MS_CAGEcluster_minus"FNR;};print $1"\t"$2"\t"$3"\t"cluster_name"\t"int($4)"\t"strand}' $bg_merged_dir/all_merged_tpms_g01_clustersd20_plus.bedgraph $bg_merged_dir/all_merged_tpms_g01_clustersd20_minus.bedgraph  | sort -k1,1 -k2,2n > $bg_merged_dir/CAGE_tpmg01_clustersd20.bed
+awk '{if(NR==FNR){strand="+";cluster_name="MS_CAGEcluster_plus"NR;}else{strand="-";cluster_name="MS_CAGEcluster_minus"FNR;};print $1"\t"$2"\t"$3"\t"cluster_name"\t"$4"\t"strand}' $bg_merged_dir/all_merged_tpms_g01_clustersd20_plus.bedgraph $bg_merged_dir/all_merged_tpms_g01_clustersd20_minus.bedgraph  | sort -k1,1 -k2,2n > $bg_merged_dir/CAGE_tpmg01_clustersd20.bed
+
+
+
+## add max pos in cluster
+awk '$6=="+"' $bg_merged_dir/CAGE_tpmg01_clustersd20.bed > $bg_merged_dir/CAGE_tpmg01_clustersd20_plus.bed
+
+bedtools intersect -sorted -loj -a $bg_merged_dir/CAGE_tpmg01_clustersd20_plus.bed -b $bg_merged_dir/all_merged_tpms_clean_plus.bedgraph | \
+awk '{
+  if($4 != name){
+    if(name != ""){
+      print max_line
+    };
+    name=$4;max_val=$10;max_pos=$8;max_line=$0;
+  }else{
+    if($10>max_val){
+      max_val=$10;max_pos=$8;max_line=$0
+    }
+  }
+}END{
+  print max_line
+}' | awk '{print $1"\t"$2"\t"$3"\t"$4":"$8"\t"$5"\t"$6}' > $bg_merged_dir/CAGE_tpmg01_clustersd20_withsummit_plus.bed
+
+
+awk '$6=="-"' $bg_merged_dir/CAGE_tpmg01_clustersd20.bed > $bg_merged_dir/CAGE_tpmg01_clustersd20_minus.bed
+
+bedtools intersect -sorted -loj -a $bg_merged_dir/CAGE_tpmg01_clustersd20_minus.bed -b $bg_merged_dir/all_merged_tpms_clean_minus.bedgraph | \
+awk '{
+  if($4 != name){
+    if(name != ""){
+      print max_line
+    };
+    name=$4;max_val=$10;max_pos=$8;max_line=$0;
+  }else{
+    if($10>=max_val){
+      max_val=$10;max_pos=$8;max_line=$0
+    }
+  }
+}END{
+  print max_line
+}' | awk '{print $1"\t"$2"\t"$3"\t"$4":"$8"\t"$5"\t"$6}' > $bg_merged_dir/CAGE_tpmg01_clustersd20_withsummit_minus.bed
+
+cat $bg_merged_dir/CAGE_tpmg01_clustersd20_withsummit_plus.bed $bg_merged_dir/CAGE_tpmg01_clustersd20_withsummit_minus.bed | sort -k1,1 -k2,2n > $bg_merged_dir/CAGE_tpmg01_clustersd20_withsummit.bed
+
+
+head $bg_merged_dir/CAGE_tpmg01_clustersd20_withsummit.bed
+# chr1    629938  629939  MS_CAGEcluster_plus1:629938     0.112597        +
+# chr1    629962  629963  MS_CAGEcluster_minus1:629962    0.137618        -
+# chr1    631365  631383  MS_CAGEcluster_plus2:631374     2.239421        +
+# chr1    631509  631526  MS_CAGEcluster_plus3:631509     2.251931        +
+# chr1    631545  631546  MS_CAGEcluster_minus2:631545    0.187661        -
+# chr1    631554  631555  MS_CAGEcluster_plus4:631554     0.100086        +
+# chr1    631686  631687  MS_CAGEcluster_plus5:631686     0.150129        +
+# chr1    633535  633536  MS_CAGEcluster_plus6:633535     0.33779 +
+# chr1    634008  634029  MS_CAGEcluster_plus7:634028     5.317057        +
+# chr1    634045  634049  MS_CAGEcluster_minus3:634048    1.000859        -
+
 ```
