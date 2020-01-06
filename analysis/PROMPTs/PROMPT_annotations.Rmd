@@ -1,5 +1,5 @@
 ---
-title: 'MS Gencode PROMPT annotations'
+title: 'PROMPT annotations'
 author: "Manfred Schmid"
 output: 
   pdf_document:
