@@ -253,7 +253,7 @@ meta_values3 %>%
   ggplot(. ,aes(x=rel_pos, y=estimate)) +
   geom_line(aes(color=class3)) +
   geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class3), alpha=.2)  +
-  facet_grid(fraction+PAP~siRNA, scales='free')  +
+  facet_grid(fraction+PAP~siRNA)  +
   ylab('Average Log2 Signal') +
   lineplot_style
 ```
@@ -272,7 +272,7 @@ meta_log2FCs3 %>%
   ggplot(. ,aes(x=rel_pos, y=estimate)) +
   geom_line(aes(color=class3)) +
   geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class3), alpha=.2)  +
-  facet_grid(fraction+PAP~siRNA, scales='free')  +
+  facet_grid(fraction+PAP~siRNA)  +
   ylab('Average Log2 Signal') +
   lineplot_style
 ```
@@ -287,7 +287,7 @@ meta_values3 %>%
   ggplot(. ,aes(x=rel_pos, y=estimate)) +
   geom_line(aes(color=class3)) +
   geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class3), alpha=.2)  +
-  facet_grid(fraction+PAP~siRNA, scales='free')  +
+  facet_grid(fraction+PAP~siRNA)  +
   ylab('Average Log2 Signal') +
   lineplot_style
 ```
@@ -298,7 +298,7 @@ meta_log2FCs3 %>%
   ggplot(. ,aes(x=rel_pos, y=estimate)) +
   geom_line(aes(color=class3)) +
   geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class3), alpha=.2)  +
-  facet_grid(fraction+PAP~siRNA, scales='free')  +
+  facet_grid(fraction+PAP~siRNA)  +
   ylab('Average Log2 Signal') +
   lineplot_style
 ```
@@ -312,10 +312,12 @@ meta_log2FCs3 %>%
   geom_ribbon(aes(x=rel_pos, ymin=0, ymax=estimate, fill=siRNA), alpha=.75) +
   geom_line(aes(x=rel_pos, y=estimate, color=siRNA)) +
   #geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class3), alpha=.2)  +
-  facet_grid(fraction+PAP~class3, scales='free')  +
+  facet_grid(fraction+PAP~class3)  +
   ylab('Average Log2 Signal') +
   areaplot_style
 ```
+
+
 
 
 
@@ -338,7 +340,7 @@ meta_values4 %>%
   ggplot(. ,aes(x=rel_pos, y=estimate)) +
   geom_line(aes(color=class4)) +
   geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class4), alpha=.2)  +
-  facet_grid(fraction+PAP~siRNA, scales='free')  +
+  facet_grid(fraction+PAP~siRNA)  +
   ylab('Average Log2 Signal') +
   lineplot_style
 ```
@@ -360,7 +362,7 @@ meta_log2FCs4 %>%
   ggplot(. ,aes(x=rel_pos, y=estimate)) +
   geom_line(aes(color=class4)) +
   geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class4), alpha=.2)  +
-  facet_grid(fraction+PAP~siRNA, scales='free')  +
+  facet_grid(fraction+PAP~siRNA)  +
   ylab('Average Log2 Signal') +
   lineplot_style
 ```
@@ -375,7 +377,7 @@ meta_log2FCs4 %>%
   geom_ribbon(aes(x=rel_pos, ymin=0, ymax=estimate, fill=siRNA), alpha=.75) +
   geom_line(aes(x=rel_pos, y=estimate, color=siRNA)) +
   #geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class3), alpha=.2)  +
-  facet_grid(fraction+PAP~class4, scales='free')  +
+  facet_grid(fraction+PAP~class4)  +
   ylab('Average Log2 Signal') +
   areaplot_style
 ```
@@ -399,7 +401,7 @@ meta_values5 %>%
   ggplot(. ,aes(x=rel_pos, y=estimate)) +
   geom_line(aes(color=class5)) +
   geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class5), alpha=.2)  +
-  facet_grid(fraction+PAP~siRNA, scales='free')  +
+  facet_grid(fraction+PAP~siRNA)  +
   ylab('Average Log2 Signal') +
   lineplot_style
 ```
@@ -418,7 +420,7 @@ meta_log2FCs5 %>%
   ggplot(. ,aes(x=rel_pos, y=estimate)) +
   geom_line(aes(color=class5)) +
   geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class5), alpha=.2)  +
-  facet_grid(fraction+PAP~siRNA, scales='free')  +
+  facet_grid(fraction+PAP~siRNA)  +
   ylab('Average Log2 Signal') +
   lineplot_style
 ```
@@ -433,7 +435,7 @@ meta_log2FCs5 %>%
   geom_ribbon(aes(x=rel_pos, ymin=0, ymax=estimate, fill=siRNA), alpha=.75) +
   geom_line(aes(x=rel_pos, y=estimate, color=siRNA)) +
   #geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class3), alpha=.2)  +
-  facet_grid(fraction+PAP~class5, scales='free')  +
+  facet_grid(fraction+PAP~class5)  +
   ylab('Average Log2 Signal') +
   areaplot_style
 ```
@@ -467,7 +469,7 @@ meta_log2FCs3 %>%
   ggplot(. ,aes(x=rel_pos, y=estimate)) +
   geom_line(aes(color=class3, linetype=hexamer)) +
   #geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class3, alpha=hexamer), alpha=.2)  +
-  facet_grid(fraction+PAP~class3+siRNA, scales='free')  +
+  facet_grid(fraction+PAP~class3+siRNA)  +
   ylab('Average Log2 Signal') +
   lineplot_style
 ```
@@ -484,7 +486,7 @@ meta_log2FCs5 %>%
   ggplot(. ,aes(x=rel_pos, y=estimate)) +
   geom_line(aes(color=class5)) +
   geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class5), alpha=.2)  +
-  facet_grid(fraction+PAP~siRNA+hexamer, scales='free')  +
+  facet_grid(fraction+PAP~siRNA+hexamer)  +
   ylab('Average Log2 Signal') +
   lineplot_style
 ```
@@ -501,7 +503,7 @@ meta_log2FCs3 %>%
   ggplot(. ,aes(x=rel_pos, y=estimate)) +
   geom_line(aes(color=class3, linetype=hexamer)) +
   #geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=class3, alpha=hexamer), alpha=.2)  +
-  facet_grid(fraction+PAP~class3+siRNA, scales='free')  +
+  facet_grid(fraction+PAP~class3+siRNA)  +
   ylab('Average Log2 Signal') +
   lineplot_style
 ```
@@ -552,6 +554,88 @@ log2FCs_with_hex %>%
   spread(class3, p.value) %>%
   kable(., digits = 100)
 ```
+
+
+
+## siZ1Z8 vs siZ8 significance
+
+```{r}
+z8 <- df %>%
+  filter(siRNA == "siZCCHC8") %>%
+  dplyr::rename(z8_log2_signal = log2_value) %>%
+  dplyr::select(id, rel_pos, series, PAP, fraction, z8_log2_signal)
+
+z1z8 <- df %>%
+  filter(siRNA == "siZCCHC8+ZFC3H1") %>%
+  dplyr::rename(z1z8_log2_signal = log2_value) %>%
+  left_join(., z8) %>%
+  mutate(z1z8vsz8_log2FC = z1z8_log2_signal - z8_log2_signal)
+```
+
+```{r}
+(ttest_meta_z1z8 <- z1z8 %>%
+  group_by(class3, PAP, fraction, rel_pos) %>%
+  do(tidy(t.test(.$z1z8vsz8_log2FC))))
+```
+
+```{r Z1Z8 vs Z8 log2FC}
+ttest_meta_z1z8 %>%
+ggplot(., aes(x=rel_pos, y=estimate, color=class3)) +
+  geom_line() +
+  geom_hline(yintercept = 0, linetype=2) +
+  facet_grid(fraction+PAP~class3) +
+  theme_bw() +
+  theme(panel.grid=element_blank(),
+        axis.text.x = element_text(angle=45, hjust=1))
+```
+
+
+```{r}
+(wilcox_meta_z1z8 <- z1z8 %>%
+  group_by(class3, PAP, fraction, rel_pos) %>%
+  do(tidy(wilcox.test(.$z1z8vsz8_log2FC))))
+```
+
+```{r}
+wilcox_meta_z1z8 %<>%
+  group_by(PAP, fraction, class3) %>%
+  mutate(FDR = p.adjust(p.value, method='BH')) 
+```
+
+```{r Z1Z8 vs Z8 wilcox fdr per line}
+wilcox_meta_z1z8 %>%
+  filter(!is.na(class3)) %>%
+  ungroup %>%
+  mutate(class3 = factor(class3, levels = c('BOTH', 'NEXT', 'PAXT'))) %>%
+ggplot(., aes(x=rel_pos, y=-log10(FDR), color=class3)) +
+  geom_line() +
+  coord_cartesian(ylim=c(0,100)) +
+  facet_grid(fraction+PAP~class3) +
+  geom_hline(yintercept = 2, color='black', linetype = 2) + 
+  geom_hline(yintercept = 5, color='black', linetype = 4) + 
+  lineplot_style
+```
+
+
+```{r}
+wilcox_meta_z1z8 %<>%
+  ungroup %>%
+  mutate(FDR_global = p.adjust(p.value, method='BH')) 
+```
+
+
+```{r Z1Z8 vs Z8 wilcox fdr global}
+wilcox_meta_z1z8 %>%
+ggplot(., aes(x=rel_pos, y=-log10(FDR_global), color=class3)) +
+  geom_line() +
+  coord_cartesian(ylim=c(0,100)) +
+  geom_hline(yintercept = c(1,2,3,4,5), color='orange') + 
+  facet_grid(fraction+PAP~class3) +
+  theme_bw() +
+  theme(panel.grid=element_blank(),
+        axis.text.x = element_text(angle=45, hjust=1))
+```
+
 
 ## sessionInfo
 ```{r}
